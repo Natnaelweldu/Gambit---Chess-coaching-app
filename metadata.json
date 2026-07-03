@@ -1,0 +1,6 @@
+{
+  "name": "Gambit",
+  "description": "An interactive Gambit Chess layout designed to provide real-time game analysis, recommendations, and conversational guidance.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
