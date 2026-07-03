@@ -12,7 +12,7 @@ async function startServer() {
   app.use(express.json());
 
   // Initialize Gemini client on the server
-  const apiKey = process.env.GEMINI_API_KEY;
+  const apiKey = process.env.VITE_GEMINI_API_KEY;
   if (!apiKey) {
     console.warn("WARNING: GEMINI_API_KEY environment variable is not set. Please set it in Settings > Secrets.");
   }
