@@ -4,10 +4,11 @@ import { ChessboardSection } from './components/ChessboardSection';
 import { CoachChatSection } from './components/CoachChatSection';
 import { RecommendationsSection } from './components/RecommendationsSection';
 import { ChessReportCard } from './components/ChessReportCard';
-import { CoachProfile } from './types';
+import { CoachProfile, RecommendationState } from './types';
 import { Shield, Sparkles, Trophy, BookOpen, Clock, Activity, Users, History, TrendingUp, Trash2, Award } from 'lucide-react';
 import { supabase, loadUserStats, saveUserStats } from './lib/supabase';
 import { SupabaseAuthModal } from './components/SupabaseAuthModal';
+import { buildRecommendationState, isAnalysisCheckpoint, RECOMMENDATION_CYCLE_LENGTH } from './lib/recommendationEngine';
 
 const DEFAULT_COACH: CoachProfile = {
   name: 'Garry',
@@ -22,7 +23,6 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<'recommendations' | 'report' | 'career'>('recommendations');
   const [coachProfile, setCoachProfile] = useState<CoachProfile>(DEFAULT_COACH);
   const [highlightedSquares, setHighlightedSquares] = useState<string[]>([]);
-  const [activeRecommendationId, setActiveRecommendationId] = useState<string | null>(null);
   const [coachHintActive, setCoachHintActive] = useState<boolean>(false);
   const [activeVideoTag, setActiveVideoTag] = useState<string | null>(null);
 
@@ -58,6 +58,16 @@ export default function App() {
     return saved ? JSON.parse(saved) : [];
   });
 
+  // Video-driven, 3-game-cycle recommendation state (persisted to Supabase / localStorage)
+  const [recommendationState, setRecommendationState] = useState<RecommendationState | null>(() => {
+    try {
+      const saved = localStorage.getItem('chessCoach_recommendationState');
+      return saved ? JSON.parse(saved) : null;
+    } catch (e) {
+      return null;
+    }
+  });
+
   // Setter wrapper that propagates to state and localStorage (and Supabase if authenticated)
   const setSkillLevel = (lvl: number) => {
     const clamped = Math.min(20, Math.max(1, lvl));
@@ -75,6 +85,7 @@ export default function App() {
       eloRating: eloRating,
       careerHistory: careerHistory,
       reportCard: reportCardObj,
+      recommendationState: recommendationState,
     });
   };
 
@@ -84,6 +95,7 @@ export default function App() {
     setSkillLevelState(stats.skillLevel);
     setEloRating(stats.eloRating);
     setCareerHistory(stats.careerHistory);
+    setRecommendationState(stats.recommendationState || null);
     if (stats.reportCard) {
       localStorage.setItem('chessCoach_reportCard', JSON.stringify(stats.reportCard));
       window.dispatchEvent(new Event("reportCardUpdated"));
@@ -117,9 +129,15 @@ export default function App() {
           const rawHist = localStorage.getItem('chess_coach_game_history');
           if (rawHist) localHistory = JSON.parse(rawHist);
         } catch (e) {}
+        let localRecommendationState: RecommendationState | null = null;
+        try {
+          const rawRec = localStorage.getItem('chessCoach_recommendationState');
+          if (rawRec) localRecommendationState = JSON.parse(rawRec);
+        } catch (e) {}
         setSkillLevelState(localSkill);
         setEloRating(localElo);
         setCareerHistory(localHistory);
+        setRecommendationState(localRecommendationState);
         window.dispatchEvent(new Event("reportCardUpdated"));
       }
     });
@@ -171,6 +189,21 @@ export default function App() {
     localStorage.setItem('chess_coach_skill_level', newSkill.toString());
     localStorage.setItem('chess_coach_elo_rating', newEloStr);
     localStorage.setItem('chess_coach_game_history', JSON.stringify(updatedHistory));
+
+    // --- 3-game recommendation cycle ---
+    // Only re-analyze and refresh the video recommendations exactly every 3 games
+    // (game_count === 3, 6, 9, ...). Every other game, the existing recommendation
+    // state is simply carried forward unchanged.
+    let nextRecommendationState = recommendationState;
+    if (isAnalysisCheckpoint(updatedHistory.length)) {
+      const recentGames = updatedHistory.slice(0, RECOMMENDATION_CYCLE_LENGTH).map((g) => ({
+        result: g.result,
+        movesCount: g.movesCount,
+        skillLevel: g.skillLevel,
+      }));
+      nextRecommendationState = buildRecommendationState(recentGames, updatedHistory.length);
+      setRecommendationState(nextRecommendationState);
+    }
 
     // Update chessCoach_reportCard in localStorage
     let reportCard: any = null;
@@ -300,6 +333,7 @@ export default function App() {
       eloRating: newEloStr,
       careerHistory: updatedHistory,
       reportCard: reportCard,
+      recommendationState: nextRecommendationState,
     });
     window.dispatchEvent(new Event("reportCardUpdated"));
   };
@@ -310,9 +344,11 @@ export default function App() {
       localStorage.removeItem('chess_coach_elo_rating');
       localStorage.removeItem('chess_coach_game_history');
       localStorage.removeItem('chessCoach_reportCard');
+      localStorage.removeItem('chessCoach_recommendationState');
       setSkillLevelState(1);
       setEloRating('1200 Elo');
       setCareerHistory([]);
+      setRecommendationState(null);
       setOutcomeRecorded(false);
 
       saveUserStats(currentUser, {
@@ -320,6 +356,7 @@ export default function App() {
         eloRating: '1200 Elo',
         careerHistory: [],
         reportCard: null,
+        recommendationState: null,
       });
 
       window.dispatchEvent(new Event("reportCardUpdated"));
@@ -330,10 +367,6 @@ export default function App() {
   const handleHintTrigger = () => {
     setCoachHintActive(true);
     setHighlightedSquares(['f7', 'c4', 'h5']);
-  };
-
-  const handleSelectRecommendation = (squares: string[]) => {
-    setHighlightedSquares(squares);
   };
 
   const handleGameUpdate = (data: {
@@ -363,9 +396,8 @@ export default function App() {
       trackGameOutcome(data.result);
     }
     
-    // Auto-clear visual recommendations when a new move is made
+    // Auto-clear visual board highlights when a new move is made
     setHighlightedSquares([]);
-    setActiveRecommendationId(null);
   };
 
   const getSimulatedEval = () => {
@@ -576,10 +608,8 @@ export default function App() {
             >
               <RecommendationsSection
                 coachProfile={coachProfile}
-                activeRecommendationId={activeRecommendationId}
-                setActiveRecommendationId={setActiveRecommendationId}
-                onSelectRecommendation={handleSelectRecommendation}
-                coachHintActive={coachHintActive}
+                gamesPlayed={careerHistory.length}
+                recommendationState={recommendationState}
                 activeVideoTag={activeVideoTag}
                 onClearVideoTag={() => setActiveVideoTag(null)}
               />

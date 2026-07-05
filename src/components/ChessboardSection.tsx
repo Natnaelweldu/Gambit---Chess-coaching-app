@@ -353,20 +353,28 @@ export const ChessboardSection: React.FC<ChessboardSectionProps> = ({
     syncBoardFromChess();
   };
 
+  // IMPORTANT: every branch below must only use non-dimensional properties (background
+  // color + inset box-shadow via `ring-*` utilities). Never mix in `border`/`margin`/
+  // `padding` here since those alter the box model and were the root cause of the whole
+  // page "jumping" whenever a square's state changed (e.g. selecting a piece). Every
+  // state now uses the same `ring-2 ... ring-inset` treatment so toggling never adds or
+  // removes a box-shadow layer, keeping every square's rendered box perfectly stable.
   const getSquareBg = (r: number, c: number, isSelected: boolean, isHighlighted: boolean, isHint: boolean, isLastMove: boolean) => {
     const isDark = (r + c) % 2 === 1;
-    
+
     if (isSelected) {
-      return 'bg-amber-500/30 ring-2 ring-amber-400 ring-inset shadow-inner';
+      return 'bg-amber-500/30 ring-2 ring-amber-400 ring-inset';
     }
     if (isHint) {
-      return 'bg-emerald-500/20 ring-2 ring-emerald-400 ring-inset shadow-inner animate-pulse';
+      return 'bg-emerald-500/20 ring-2 ring-emerald-400 ring-inset animate-pulse';
     }
     if (isHighlighted) {
       return 'bg-sky-500/25 ring-2 ring-sky-400 ring-inset';
     }
     if (isLastMove) {
-      return isDark ? 'bg-amber-900/30 border border-amber-500/25' : 'bg-amber-100/15 border border-amber-500/25';
+      return isDark
+        ? 'bg-amber-900/30 ring-2 ring-amber-500/25 ring-inset'
+        : 'bg-amber-100/15 ring-2 ring-amber-500/25 ring-inset';
     }
 
     switch (boardTheme) {
@@ -397,7 +405,7 @@ export const ChessboardSection: React.FC<ChessboardSectionProps> = ({
   };
 
   return (
-    <div id="chessboard-container" className="flex flex-col h-full bg-slate-950/80 border border-slate-800/80 rounded-2xl p-4 md:p-6 backdrop-blur-xl shadow-2xl overflow-hidden relative">
+    <div id="chessboard-container" className="flex flex-col h-full bg-slate-950/80 border border-slate-800/80 rounded-2xl p-4 md:p-6 backdrop-blur-xl shadow-2xl overflow-hidden relative touch-manipulation overscroll-contain">
       
       {/* Game Mode Selector and Configuration Controls */}
       <div className="flex flex-wrap items-center justify-between gap-4 mb-4 pb-4 border-b border-slate-900">
@@ -527,7 +535,7 @@ export const ChessboardSection: React.FC<ChessboardSectionProps> = ({
                     key={`${rIdx}-${cIdx}`}
                     id={`square-${squareName}`}
                     onClick={() => handleSquareClick(rIdx, cIdx)}
-                    className={`relative aspect-square flex items-center justify-center cursor-pointer transition-all duration-150 select-none ${getSquareBg(
+                    className={`relative aspect-square flex items-center justify-center cursor-pointer transition-colors duration-150 select-none touch-manipulation ${getSquareBg(
                       rIdx,
                       cIdx,
                       isSelected,

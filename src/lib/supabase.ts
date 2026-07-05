@@ -1,4 +1,5 @@
 import { createClient } from '@supabase/supabase-js';
+import { RecommendationState } from '../types';
 
 function sanitizeSupabaseUrl(url: string): string {
   if (!url) return '';
@@ -82,7 +83,10 @@ export interface UserStats {
   eloRating: string;
   careerHistory: any[];
   reportCard: any;
+  recommendationState: RecommendationState | null;
 }
+
+const RECOMMENDATION_STATE_STORAGE_KEY = 'chessCoach_recommendationState';
 
 // Load statistics: tries Supabase table -> falls back to Supabase user_metadata -> falls back to localStorage
 export async function loadUserStats(user: any): Promise<UserStats> {
@@ -91,6 +95,7 @@ export async function loadUserStats(user: any): Promise<UserStats> {
     eloRating: localStorage.getItem('chess_coach_elo_rating') || '1200 Elo',
     careerHistory: [],
     reportCard: null,
+    recommendationState: null,
   };
   
   try {
@@ -111,6 +116,15 @@ export async function loadUserStats(user: any): Promise<UserStats> {
     console.warn('Error parsing local report card:', e);
   }
 
+  try {
+    const rawRecommendationState = localStorage.getItem(RECOMMENDATION_STATE_STORAGE_KEY);
+    if (rawRecommendationState) {
+      localStats.recommendationState = JSON.parse(rawRecommendationState);
+    }
+  } catch (e) {
+    console.warn('Error parsing local recommendation state:', e);
+  }
+
   if (!supabase || !user) {
     return localStats;
   }
@@ -119,7 +133,7 @@ export async function loadUserStats(user: any): Promise<UserStats> {
   try {
     const { data, error } = await supabase
       .from('profiles')
-      .select('skill_level, elo_rating, game_history, report_card')
+      .select('skill_level, elo_rating, game_history, report_card, recommendation_state')
       .eq('id', user.id)
       .maybeSingle();
 
@@ -129,6 +143,7 @@ export async function loadUserStats(user: any): Promise<UserStats> {
         eloRating: data.elo_rating ?? localStats.eloRating,
         careerHistory: Array.isArray(data.game_history) ? data.game_history : localStats.careerHistory,
         reportCard: data.report_card ?? localStats.reportCard,
+        recommendationState: data.recommendation_state ?? localStats.recommendationState,
       };
     }
   } catch (e) {
@@ -143,6 +158,7 @@ export async function loadUserStats(user: any): Promise<UserStats> {
       eloRating: metadata.eloRating || '1200 Elo',
       careerHistory: Array.isArray(metadata.careerHistory) ? metadata.careerHistory : [],
       reportCard: metadata.reportCard || null,
+      recommendationState: metadata.recommendationState ?? null,
     };
   }
 
@@ -157,6 +173,9 @@ export async function saveUserStats(user: any, stats: UserStats): Promise<void> 
   localStorage.setItem('chess_coach_game_history', JSON.stringify(stats.careerHistory));
   if (stats.reportCard) {
     localStorage.setItem('chessCoach_reportCard', JSON.stringify(stats.reportCard));
+  }
+  if (stats.recommendationState) {
+    localStorage.setItem(RECOMMENDATION_STATE_STORAGE_KEY, JSON.stringify(stats.recommendationState));
   }
 
   if (!supabase || !user) {
@@ -174,6 +193,7 @@ export async function saveUserStats(user: any, stats: UserStats): Promise<void> 
         elo_rating: stats.eloRating,
         game_history: stats.careerHistory,
         report_card: stats.reportCard,
+        recommendation_state: stats.recommendationState,
         updated_at: new Date().toISOString(),
       });
 
@@ -192,6 +212,7 @@ export async function saveUserStats(user: any, stats: UserStats): Promise<void> 
         eloRating: stats.eloRating,
         careerHistory: stats.careerHistory,
         reportCard: stats.reportCard,
+        recommendationState: stats.recommendationState,
       },
     });
   } catch (e) {
