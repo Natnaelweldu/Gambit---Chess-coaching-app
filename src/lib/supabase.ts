@@ -84,6 +84,7 @@ export interface UserStats {
   careerHistory: any[];
   reportCard: any;
   recommendationState: RecommendationState | null;
+  coachMemory?: string;
 }
 
 const RECOMMENDATION_STATE_STORAGE_KEY = 'chessCoach_recommendationState';
@@ -96,6 +97,7 @@ export async function loadUserStats(user: any): Promise<UserStats> {
     careerHistory: [],
     reportCard: null,
     recommendationState: null,
+    coachMemory: localStorage.getItem('chess_coach_memory') || '',
   };
   
   try {
@@ -133,7 +135,7 @@ export async function loadUserStats(user: any): Promise<UserStats> {
   try {
     const { data, error } = await supabase
       .from('profiles')
-      .select('skill_level, elo_rating, game_history, report_card, recommendation_state')
+      .select('skill_level, elo_rating, game_history, report_card, recommendation_state, coach_memory')
       .eq('id', user.id)
       .maybeSingle();
 
@@ -144,6 +146,7 @@ export async function loadUserStats(user: any): Promise<UserStats> {
         careerHistory: Array.isArray(data.game_history) ? data.game_history : localStats.careerHistory,
         reportCard: data.report_card ?? localStats.reportCard,
         recommendationState: data.recommendation_state ?? localStats.recommendationState,
+        coachMemory: data.coach_memory ?? localStats.coachMemory,
       };
     }
   } catch (e) {
@@ -159,6 +162,7 @@ export async function loadUserStats(user: any): Promise<UserStats> {
       careerHistory: Array.isArray(metadata.careerHistory) ? metadata.careerHistory : [],
       reportCard: metadata.reportCard || null,
       recommendationState: metadata.recommendationState ?? null,
+      coachMemory: metadata.coachMemory || '',
     };
   }
 
@@ -177,6 +181,9 @@ export async function saveUserStats(user: any, stats: UserStats): Promise<void> 
   if (stats.recommendationState) {
     localStorage.setItem(RECOMMENDATION_STATE_STORAGE_KEY, JSON.stringify(stats.recommendationState));
   }
+  if (stats.coachMemory !== undefined) {
+    localStorage.setItem('chess_coach_memory', stats.coachMemory);
+  }
 
   if (!supabase || !user) {
     return;
@@ -194,6 +201,7 @@ export async function saveUserStats(user: any, stats: UserStats): Promise<void> 
         game_history: stats.careerHistory,
         report_card: stats.reportCard,
         recommendation_state: stats.recommendationState,
+        coach_memory: stats.coachMemory || '',
         updated_at: new Date().toISOString(),
       });
 
@@ -213,6 +221,7 @@ export async function saveUserStats(user: any, stats: UserStats): Promise<void> 
         careerHistory: stats.careerHistory,
         reportCard: stats.reportCard,
         recommendationState: stats.recommendationState,
+        coachMemory: stats.coachMemory || '',
       },
     });
   } catch (e) {

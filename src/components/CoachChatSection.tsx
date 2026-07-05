@@ -11,6 +11,8 @@ interface CoachChatSectionProps {
   inCheck: boolean;
   isGameOver: boolean;
   gameResult: 'win' | 'loss' | 'draw' | 'active';
+  coachMemory: string;
+  onMemoryUpdated: (newMemory: string) => void;
   onTagDetected?: (tag: string) => void;
 }
 
@@ -64,13 +66,29 @@ export const CoachChatSection: React.FC<CoachChatSectionProps> = ({
   inCheck,
   isGameOver,
   gameResult,
+  coachMemory,
+  onMemoryUpdated,
   onTagDetected,
 }) => {
-  const [messages, setMessages] = useState<ChatMessage[]>(INITIAL_MESSAGES);
+  const [messages, setMessages] = useState<ChatMessage[]>(() => {
+    try {
+      const saved = localStorage.getItem('chess_coach_chat_history');
+      return saved ? JSON.parse(saved) : INITIAL_MESSAGES;
+    } catch (e) {
+      return INITIAL_MESSAGES;
+    }
+  });
   const [inputValue, setInputValue] = useState('');
   const [isCoachThinking, setIsCoachThinking] = useState(false);
+  const [isJournalOpen, setIsJournalOpen] = useState(false);
+  const [isSavingMemory, setIsSavingMemory] = useState(false);
+  
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const lastHistoryLength = useRef(gameHistory.length);
+
+  useEffect(() => {
+    localStorage.setItem('chess_coach_chat_history', JSON.stringify(messages));
+  }, [messages]);
   const analyzedGameEnd = useRef<string | null>(null);
 
   // Auto scroll chat to bottom when message arrives
@@ -117,7 +135,42 @@ export const CoachChatSection: React.FC<CoachChatSectionProps> = ({
       skillLevel: parseInt(skillLevel, 10),
       eloRating,
       careerHistoryLength,
+      coachMemory: coachMemory || '',
     };
+  };
+
+  // Consolidate recent context into coach memory asynchronously
+  const triggerMemoryConsolidation = async (updatedHistory: ChatMessage[], isGameEndSignal = false) => {
+    setIsSavingMemory(true);
+    try {
+      const userProfile = getUserProfile();
+      const response = await fetch('/api/coach/summarize-memory', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          currentHistory: updatedHistory,
+          previousMemory: coachMemory,
+          userProfile,
+          gameHistory,
+          coachProfile,
+        }),
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        if (data.coachMemory) {
+          onMemoryUpdated(data.coachMemory);
+          // Auto-open journal briefly if it was a game end to delight the user
+          if (isGameEndSignal) {
+            setIsJournalOpen(true);
+          }
+        }
+      }
+    } catch (e) {
+      console.error('Failed to update training memory:', e);
+    } finally {
+      setIsSavingMemory(false);
+    }
   };
 
   const getCoachResponseFromApi = async (
@@ -149,15 +202,25 @@ export const CoachChatSection: React.FC<CoachChatSectionProps> = ({
 
       const data = await response.json();
       
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: `msg-coach-${Date.now()}`,
-          sender: 'coach',
-          text: data.text,
-          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        },
-      ]);
+      const newCoachMessage = {
+        id: `msg-coach-${Date.now()}`,
+        sender: 'coach' as const,
+        text: data.text,
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      };
+
+      setMessages((prev) => {
+        const updated = [...prev, newCoachMessage];
+        
+        // Trigger a background memory summary update:
+        // - After any finished game reviews (game-end coaching landmarks)
+        // - Every 3 user questions to maintain current focus (highly token-efficient compression)
+        const userMsgCount = updated.filter(m => m.sender === 'user').length;
+        if (isGameEnd || (userMsgCount > 0 && userMsgCount % 3 === 0)) {
+          setTimeout(() => triggerMemoryConsolidation(updated, isGameEnd), 100);
+        }
+        return updated;
+      });
     } catch (error) {
       console.error('Failed to get coach response:', error);
       // Fallback response with the required tag
@@ -329,6 +392,68 @@ export const CoachChatSection: React.FC<CoachChatSectionProps> = ({
         <p className="text-[11px] text-slate-500 italic mt-2.5 line-clamp-2">
           "{coachProfile.description}"
         </p>
+
+        {/* Dynamic Coach Training Journal */}
+        <div className="mt-3 border border-slate-900 rounded-xl overflow-hidden bg-slate-950/60 transition-all hover:border-slate-800/80">
+          <button
+            type="button"
+            onClick={() => setIsJournalOpen(!isJournalOpen)}
+            className="w-full flex items-center justify-between px-3 py-2 text-[11px] font-bold uppercase tracking-wider text-slate-400 hover:text-amber-300 transition-all bg-slate-900/40"
+          >
+            <div className="flex items-center gap-1.5">
+              <span className="text-xs">🧠</span>
+              <span>Coach's Training Journal</span>
+              {isSavingMemory && (
+                <span className="flex h-1.5 w-1.5 relative">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
+                  <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-amber-500"></span>
+                </span>
+              )}
+            </div>
+            <span className="text-[10px] text-slate-500 font-mono">
+              {isJournalOpen ? 'Collapse ▲' : 'Expand ▼'}
+            </span>
+          </button>
+          
+          <AnimatePresence>
+            {isJournalOpen && (
+              <motion.div
+                initial={{ height: 0, opacity: 0 }}
+                animate={{ height: 'auto', opacity: 1 }}
+                exit={{ height: 0, opacity: 0 }}
+                transition={{ duration: 0.2 }}
+                className="overflow-hidden"
+              >
+                <div className="p-3 border-t border-slate-900 text-xs text-slate-300 leading-relaxed space-y-1 bg-slate-950/40">
+                  {coachMemory ? (
+                    <p className="italic text-slate-300">"{coachMemory}"</p>
+                  ) : (
+                    <p className="text-slate-500 italic">
+                      Coach {coachProfile.name} is observing your playstyle. Your training notes will update automatically as we play and chat!
+                    </p>
+                  )}
+                  <div className="flex items-center justify-between pt-1.5 border-t border-slate-900/40 text-[10px] text-slate-500 font-mono">
+                    <span>STATUS: {isSavingMemory ? 'Updating...' : 'Active & Synced'}</span>
+                    {coachMemory && (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          if (confirm('Reset training journal notes?')) {
+                            onMemoryUpdated('');
+                          }
+                        }}
+                        className="text-red-400 hover:text-red-300 underline transition-all"
+                      >
+                        Reset Notes
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </div>
       </div>
 
       {/* Chat messages stream */}

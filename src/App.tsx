@@ -5,9 +5,10 @@ import { CoachChatSection } from './components/CoachChatSection';
 import { RecommendationsSection } from './components/RecommendationsSection';
 import { ChessReportCard } from './components/ChessReportCard';
 import { CoachProfile, RecommendationState } from './types';
-import { Shield, Sparkles, Trophy, BookOpen, Clock, Activity, Users, History, TrendingUp, Trash2, Award } from 'lucide-react';
+import { Shield, Sparkles, Trophy, BookOpen, Clock, Activity, Users, History, TrendingUp, Trash2, Award, Loader2 } from 'lucide-react';
 import { supabase, loadUserStats, saveUserStats } from './lib/supabase';
 import { SupabaseAuthModal } from './components/SupabaseAuthModal';
+import { AuthGateway } from './components/AuthGateway';
 import { buildRecommendationState, isAnalysisCheckpoint, RECOMMENDATION_CYCLE_LENGTH } from './lib/recommendationEngine';
 
 const DEFAULT_COACH: CoachProfile = {
@@ -28,6 +29,7 @@ export default function App() {
 
   // Supabase Auth and Sync States
   const [currentUser, setCurrentUser] = useState<any>(null);
+  const [authLoading, setAuthLoading] = useState<boolean>(true);
   const [authModalOpen, setAuthModalOpen] = useState<boolean>(false);
   const [authModalMode, setAuthModalMode] = useState<'signin' | 'signup'>('signin');
 
@@ -58,6 +60,10 @@ export default function App() {
     return saved ? JSON.parse(saved) : [];
   });
 
+  const [coachMemory, setCoachMemory] = useState<string>(() => {
+    return localStorage.getItem('chess_coach_memory') || '';
+  });
+
   // Video-driven, 3-game-cycle recommendation state (persisted to Supabase / localStorage)
   const [recommendationState, setRecommendationState] = useState<RecommendationState | null>(() => {
     try {
@@ -86,6 +92,7 @@ export default function App() {
       careerHistory: careerHistory,
       reportCard: reportCardObj,
       recommendationState: recommendationState,
+      coachMemory: coachMemory,
     });
   };
 
@@ -96,6 +103,7 @@ export default function App() {
     setEloRating(stats.eloRating);
     setCareerHistory(stats.careerHistory);
     setRecommendationState(stats.recommendationState || null);
+    setCoachMemory(stats.coachMemory || '');
     if (stats.reportCard) {
       localStorage.setItem('chessCoach_reportCard', JSON.stringify(stats.reportCard));
       window.dispatchEvent(new Event("reportCardUpdated"));
@@ -103,14 +111,23 @@ export default function App() {
   };
 
   useEffect(() => {
-    if (!supabase) return;
+    if (!supabase) {
+      setAuthLoading(false);
+      return;
+    }
 
     // Get current session on mount
     supabase.auth.getSession().then(({ data: { session } }) => {
       if (session?.user) {
         setCurrentUser(session.user);
-        handleFetchAndSyncStats(session.user);
+        handleFetchAndSyncStats(session.user).finally(() => {
+          setAuthLoading(false);
+        });
+      } else {
+        setAuthLoading(false);
       }
+    }).catch(() => {
+      setAuthLoading(false);
     });
 
     // Listen to auth changes
@@ -134,10 +151,12 @@ export default function App() {
           const rawRec = localStorage.getItem('chessCoach_recommendationState');
           if (rawRec) localRecommendationState = JSON.parse(rawRec);
         } catch (e) {}
+        const localMemory = localStorage.getItem('chess_coach_memory') || '';
         setSkillLevelState(localSkill);
         setEloRating(localElo);
         setCareerHistory(localHistory);
         setRecommendationState(localRecommendationState);
+        setCoachMemory(localMemory);
         window.dispatchEvent(new Event("reportCardUpdated"));
       }
     });
@@ -146,6 +165,75 @@ export default function App() {
       subscription.unsubscribe();
     };
   }, []);
+
+  // Function to asynchronously generate recommendations via our new dynamic backend endpoint
+  const fetchDynamicRecommendations = async (updatedHistory: any[], targetSkill: number, targetElo: string, reportCardObj: any) => {
+    try {
+      const recentGames = updatedHistory.slice(0, RECOMMENDATION_CYCLE_LENGTH).map((g) => ({
+        result: g.result,
+        movesCount: g.movesCount,
+        skillLevel: g.skillLevel,
+      }));
+
+      // Gather chat history from localStorage
+      let chatHistory = [];
+      try {
+        const rawChat = localStorage.getItem('chess_coach_chat_history');
+        if (rawChat) chatHistory = JSON.parse(rawChat);
+      } catch (e) {}
+
+      const response = await fetch('/api/coach/analyze-recommendations', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          recentGames,
+          chatHistory,
+          coachProfile,
+          userProfile: {
+            skillLevel: targetSkill,
+            eloRating: targetElo,
+            totalGamesPlayed: updatedHistory.length,
+          }
+        })
+      });
+
+      if (!response.ok) throw new Error('API request failed');
+
+      const data = await response.json();
+      setRecommendationState(data);
+      localStorage.setItem('chessCoach_recommendationState', JSON.stringify(data));
+
+      saveUserStats(currentUser, {
+        skillLevel: targetSkill,
+        eloRating: targetElo,
+        careerHistory: updatedHistory,
+        reportCard: reportCardObj,
+        recommendationState: data,
+        coachMemory: coachMemory,
+      });
+    } catch (err) {
+      console.error('Failed to retrieve dynamic recommendations, using local generator fallback:', err);
+      const fallbackState = buildRecommendationState(
+        updatedHistory.slice(0, RECOMMENDATION_CYCLE_LENGTH).map((g) => ({
+          result: g.result,
+          movesCount: g.movesCount,
+          skillLevel: g.skillLevel,
+        })),
+        updatedHistory.length
+      );
+      setRecommendationState(fallbackState);
+      localStorage.setItem('chessCoach_recommendationState', JSON.stringify(fallbackState));
+
+      saveUserStats(currentUser, {
+        skillLevel: targetSkill,
+        eloRating: targetElo,
+        careerHistory: updatedHistory,
+        reportCard: reportCardObj,
+        recommendationState: fallbackState,
+        coachMemory: coachMemory,
+      });
+    }
+  };
 
   // Function to process a finished game
   const trackGameOutcome = (result: 'win' | 'loss' | 'draw') => {
@@ -194,16 +282,7 @@ export default function App() {
     // Only re-analyze and refresh the video recommendations exactly every 3 games
     // (game_count === 3, 6, 9, ...). Every other game, the existing recommendation
     // state is simply carried forward unchanged.
-    let nextRecommendationState = recommendationState;
-    if (isAnalysisCheckpoint(updatedHistory.length)) {
-      const recentGames = updatedHistory.slice(0, RECOMMENDATION_CYCLE_LENGTH).map((g) => ({
-        result: g.result,
-        movesCount: g.movesCount,
-        skillLevel: g.skillLevel,
-      }));
-      nextRecommendationState = buildRecommendationState(recentGames, updatedHistory.length);
-      setRecommendationState(nextRecommendationState);
-    }
+    const isCheckpoint = isAnalysisCheckpoint(updatedHistory.length);
 
     // Update chessCoach_reportCard in localStorage
     let reportCard: any = null;
@@ -328,13 +407,20 @@ export default function App() {
       }
     }
 
-    saveUserStats(currentUser, {
-      skillLevel: newSkill,
-      eloRating: newEloStr,
-      careerHistory: updatedHistory,
-      reportCard: reportCard,
-      recommendationState: nextRecommendationState,
-    });
+    localStorage.setItem('chessCoach_reportCard', JSON.stringify(reportCard));
+
+    if (isCheckpoint) {
+      fetchDynamicRecommendations(updatedHistory, newSkill, newEloStr, reportCard);
+    } else {
+      saveUserStats(currentUser, {
+        skillLevel: newSkill,
+        eloRating: newEloStr,
+        careerHistory: updatedHistory,
+        reportCard: reportCard,
+        recommendationState: recommendationState,
+        coachMemory: coachMemory,
+      });
+    }
     window.dispatchEvent(new Event("reportCardUpdated"));
   };
 
@@ -345,10 +431,13 @@ export default function App() {
       localStorage.removeItem('chess_coach_game_history');
       localStorage.removeItem('chessCoach_reportCard');
       localStorage.removeItem('chessCoach_recommendationState');
+      localStorage.removeItem('chess_coach_memory');
+      localStorage.removeItem('chess_coach_chat_history');
       setSkillLevelState(1);
       setEloRating('1200 Elo');
       setCareerHistory([]);
       setRecommendationState(null);
+      setCoachMemory('');
       setOutcomeRecorded(false);
 
       saveUserStats(currentUser, {
@@ -357,9 +446,11 @@ export default function App() {
         careerHistory: [],
         reportCard: null,
         recommendationState: null,
+        coachMemory: '',
       });
 
       window.dispatchEvent(new Event("reportCardUpdated"));
+      window.location.reload();
     }
   };
 
@@ -412,6 +503,29 @@ export default function App() {
     const sign = baseEval >= 0 ? '+' : '';
     return `${sign}${baseEval.toFixed(2)}`;
   };
+
+  if (authLoading) {
+    return (
+      <div className="min-h-screen bg-[#020617] text-slate-100 flex flex-col justify-center items-center relative font-sans">
+        <div className="absolute top-0 left-1/4 w-[500px] h-[500px] bg-amber-500/5 rounded-full blur-[120px] pointer-events-none" />
+        <div className="bg-slate-950/40 border border-slate-900 rounded-2xl p-8 flex flex-col items-center gap-4 shadow-2xl">
+          <Loader2 className="w-8 h-8 animate-spin text-amber-500" />
+          <p className="text-xs font-mono tracking-wider text-slate-400 uppercase">Verifying Security Session...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (!currentUser) {
+    return (
+      <AuthGateway
+        onAuthSuccess={(user) => {
+          setCurrentUser(user);
+          handleFetchAndSyncStats(user);
+        }}
+      />
+    );
+  }
 
   return (
     <div className="h-screen overflow-hidden bg-[#020617] text-slate-100 font-sans flex flex-col selection:bg-amber-500/30 selection:text-amber-200">
@@ -549,6 +663,23 @@ export default function App() {
               inCheck={inCheck}
               isGameOver={isGameOver}
               gameResult={gameResult}
+              coachMemory={coachMemory}
+              onMemoryUpdated={(newMemory) => {
+                setCoachMemory(newMemory);
+                let reportCardObj = null;
+                try {
+                  const raw = localStorage.getItem('chessCoach_reportCard');
+                  if (raw) reportCardObj = JSON.parse(raw);
+                } catch (e) {}
+                saveUserStats(currentUser, {
+                  skillLevel,
+                  eloRating,
+                  careerHistory,
+                  reportCard: reportCardObj,
+                  recommendationState,
+                  coachMemory: newMemory
+                });
+              }}
               onTagDetected={(tag) => {
                 setActiveVideoTag(tag);
                 setActiveTab('recommendations');
