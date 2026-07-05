@@ -731,6 +731,7 @@ export default function App() {
             transition={{ duration: 0.35 }}
           >
             <PerformanceHub
+              currentUser={currentUser}
               careerHistory={careerHistory}
               unlockedAchievements={unlockedAchievements}
               eloRating={eloRating}
