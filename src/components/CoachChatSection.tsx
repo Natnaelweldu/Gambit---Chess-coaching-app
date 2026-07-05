@@ -83,7 +83,7 @@ export const CoachChatSection: React.FC<CoachChatSectionProps> = ({
   const [isJournalOpen, setIsJournalOpen] = useState(false);
   const [isSavingMemory, setIsSavingMemory] = useState(false);
   
-  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const messagesContainerRef = useRef<HTMLDivElement>(null);
   const lastHistoryLength = useRef(gameHistory.length);
 
   useEffect(() => {
@@ -93,7 +93,12 @@ export const CoachChatSection: React.FC<CoachChatSectionProps> = ({
 
   // Auto scroll chat to bottom when message arrives
   const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    if (messagesContainerRef.current) {
+      messagesContainerRef.current.scrollTo({
+        top: messagesContainerRef.current.scrollHeight,
+        behavior: 'smooth',
+      });
+    }
   };
 
   useEffect(() => {
@@ -457,7 +462,7 @@ export const CoachChatSection: React.FC<CoachChatSectionProps> = ({
       </div>
 
       {/* Chat messages stream */}
-      <div className="flex-1 min-h-0 overflow-y-auto py-4 space-y-4 scrollbar-thin scrollbar-thumb-slate-800 pr-1">
+      <div ref={messagesContainerRef} className="flex-1 min-h-0 overflow-y-auto py-4 space-y-4 scrollbar-thin scrollbar-thumb-slate-800 pr-1">
         <AnimatePresence initial={false}>
           {messages.map((msg) => (
             <motion.div
@@ -512,7 +517,6 @@ export const CoachChatSection: React.FC<CoachChatSectionProps> = ({
             </motion.div>
           )}
         </AnimatePresence>
-        <div ref={messagesEndRef} />
       </div>
 
       {/* Suggested prompts / interaction starters */}
