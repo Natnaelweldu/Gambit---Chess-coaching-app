@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { motion } from 'motion/react';
 import { ChessboardSection } from './components/ChessboardSection';
 import { CoachChatSection } from './components/CoachChatSection';
@@ -6,6 +6,8 @@ import { RecommendationsSection } from './components/RecommendationsSection';
 import { ChessReportCard } from './components/ChessReportCard';
 import { CoachProfile } from './types';
 import { Shield, Sparkles, Trophy, BookOpen, Clock, Activity, Users, History, TrendingUp, Trash2, Award } from 'lucide-react';
+import { supabase, loadUserStats, saveUserStats } from './lib/supabase';
+import { SupabaseAuthModal } from './components/SupabaseAuthModal';
 
 const DEFAULT_COACH: CoachProfile = {
   name: 'Garry',
@@ -23,6 +25,11 @@ export default function App() {
   const [activeRecommendationId, setActiveRecommendationId] = useState<string | null>(null);
   const [coachHintActive, setCoachHintActive] = useState<boolean>(false);
   const [activeVideoTag, setActiveVideoTag] = useState<string | null>(null);
+
+  // Supabase Auth and Sync States
+  const [currentUser, setCurrentUser] = useState<any>(null);
+  const [authModalOpen, setAuthModalOpen] = useState<boolean>(false);
+  const [authModalMode, setAuthModalMode] = useState<'signin' | 'signup'>('signin');
 
   // Live game state trackers
   const [gameFen, setGameFen] = useState<string>('');
@@ -51,12 +58,76 @@ export default function App() {
     return saved ? JSON.parse(saved) : [];
   });
 
-  // Setter wrapper that propagates to state and localStorage
+  // Setter wrapper that propagates to state and localStorage (and Supabase if authenticated)
   const setSkillLevel = (lvl: number) => {
     const clamped = Math.min(20, Math.max(1, lvl));
     setSkillLevelState(clamped);
     localStorage.setItem('chess_coach_skill_level', clamped.toString());
+
+    let reportCardObj = null;
+    try {
+      const raw = localStorage.getItem('chessCoach_reportCard');
+      if (raw) reportCardObj = JSON.parse(raw);
+    } catch (e) {}
+
+    saveUserStats(currentUser, {
+      skillLevel: clamped,
+      eloRating: eloRating,
+      careerHistory: careerHistory,
+      reportCard: reportCardObj,
+    });
   };
+
+  // Load and sync stats when user logs in or auth state changes
+  const handleFetchAndSyncStats = async (user: any) => {
+    const stats = await loadUserStats(user);
+    setSkillLevelState(stats.skillLevel);
+    setEloRating(stats.eloRating);
+    setCareerHistory(stats.careerHistory);
+    if (stats.reportCard) {
+      localStorage.setItem('chessCoach_reportCard', JSON.stringify(stats.reportCard));
+      window.dispatchEvent(new Event("reportCardUpdated"));
+    }
+  };
+
+  useEffect(() => {
+    if (!supabase) return;
+
+    // Get current session on mount
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      if (session?.user) {
+        setCurrentUser(session.user);
+        handleFetchAndSyncStats(session.user);
+      }
+    });
+
+    // Listen to auth changes
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
+      if (session?.user) {
+        setCurrentUser(session.user);
+        await handleFetchAndSyncStats(session.user);
+      } else {
+        setCurrentUser(null);
+        // Reset to guest localStorage values
+        const savedSkill = localStorage.getItem('chess_coach_skill_level');
+        const localSkill = savedSkill ? Math.min(20, Math.max(1, parseInt(savedSkill, 10))) : 1;
+        const localElo = localStorage.getItem('chess_coach_elo_rating') || '1200 Elo';
+        let localHistory = [];
+        try {
+          const rawHist = localStorage.getItem('chess_coach_game_history');
+          if (rawHist) localHistory = JSON.parse(rawHist);
+        } catch (e) {}
+        setSkillLevelState(localSkill);
+        setEloRating(localElo);
+        setCareerHistory(localHistory);
+        window.dispatchEvent(new Event("reportCardUpdated"));
+      }
+    });
+
+    return () => {
+      subscription.unsubscribe();
+    };
+  }, []);
 
   // Function to process a finished game
   const trackGameOutcome = (result: 'win' | 'loss' | 'draw') => {
@@ -224,7 +295,12 @@ export default function App() {
       }
     }
 
-    localStorage.setItem('chessCoach_reportCard', JSON.stringify(reportCard));
+    saveUserStats(currentUser, {
+      skillLevel: newSkill,
+      eloRating: newEloStr,
+      careerHistory: updatedHistory,
+      reportCard: reportCard,
+    });
     window.dispatchEvent(new Event("reportCardUpdated"));
   };
 
@@ -238,6 +314,14 @@ export default function App() {
       setEloRating('1200 Elo');
       setCareerHistory([]);
       setOutcomeRecorded(false);
+
+      saveUserStats(currentUser, {
+        skillLevel: 1,
+        eloRating: '1200 Elo',
+        careerHistory: [],
+        reportCard: null,
+      });
+
       window.dispatchEvent(new Event("reportCardUpdated"));
     }
   };
@@ -349,12 +433,57 @@ export default function App() {
             </div>
           </div>
 
-          {/* Header Action CTA */}
-          <div>
-            <div className="flex items-center gap-2 bg-slate-900/80 border border-slate-800/80 px-3.5 py-1.5 rounded-xl text-xs font-semibold text-slate-300">
+          {/* Header Action CTA & User Auth */}
+          <div className="flex items-center gap-3">
+            <div className="hidden sm:flex items-center gap-2 bg-slate-900/80 border border-slate-800/80 px-3.5 py-1.5 rounded-xl text-xs font-semibold text-slate-300">
               <span className={`inline-block w-2 h-2 rounded-full ${isAiThinking ? 'bg-amber-400 animate-ping' : 'bg-emerald-500'}`}></span>
               <span>{isAiThinking ? 'Stockfish calculating...' : 'Coach Engine Live'}</span>
             </div>
+
+            {currentUser ? (
+              <div className="flex items-center gap-2 bg-slate-950/40 border border-slate-900 px-2 py-1 rounded-xl">
+                <div className="flex flex-col items-end hidden md:flex mr-1">
+                  <span className="text-[10px] text-slate-400 font-mono max-w-[120px] truncate">{currentUser.email}</span>
+                  <span className="text-[9px] text-amber-400 font-bold uppercase tracking-wider">Cloud Sync</span>
+                </div>
+                <div className="w-8 h-8 rounded-lg bg-amber-500/10 border border-amber-500/30 flex items-center justify-center text-amber-400 font-bold text-sm">
+                  {currentUser.email?.[0]?.toUpperCase() || 'U'}
+                </div>
+                <button
+                  onClick={async () => {
+                    if (supabase) {
+                      await supabase.auth.signOut();
+                    } else {
+                      setCurrentUser(null);
+                    }
+                  }}
+                  className="text-xs font-bold font-mono text-slate-400 hover:text-red-400 transition-colors border border-slate-800/80 hover:border-red-500/20 px-2.5 py-1.5 rounded-lg hover:bg-red-500/10 cursor-pointer"
+                >
+                  Sign Out
+                </button>
+              </div>
+            ) : (
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => {
+                    setAuthModalMode('signin');
+                    setAuthModalOpen(true);
+                  }}
+                  className="text-xs font-bold text-slate-300 hover:text-white hover:bg-slate-800/40 border border-slate-800 px-3 py-2 rounded-lg transition-all active:scale-95 cursor-pointer uppercase tracking-wider"
+                >
+                  Sign In
+                </button>
+                <button
+                  onClick={() => {
+                    setAuthModalMode('signup');
+                    setAuthModalOpen(true);
+                  }}
+                  className="flex items-center gap-1.5 text-xs font-bold text-slate-950 bg-amber-500 hover:bg-amber-600 transition-all px-3.5 py-2 rounded-lg active:scale-95 cursor-pointer uppercase tracking-wider"
+                >
+                  Sign Up
+                </button>
+              </div>
+            )}
           </div>
 
         </div>
@@ -639,6 +768,16 @@ export default function App() {
           </div>
         </div>
       </footer>
+
+      <SupabaseAuthModal
+        isOpen={authModalOpen}
+        onClose={() => setAuthModalOpen(false)}
+        initialMode={authModalMode}
+        onAuthSuccess={(user) => {
+          setCurrentUser(user);
+          handleFetchAndSyncStats(user);
+        }}
+      />
 
     </div>
   );
