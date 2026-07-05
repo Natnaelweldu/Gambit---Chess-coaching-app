@@ -85,6 +85,7 @@ export interface UserStats {
   reportCard: any;
   recommendationState: RecommendationState | null;
   coachMemory?: string;
+  unlockedAchievements?: string[];
 }
 
 const RECOMMENDATION_STATE_STORAGE_KEY = 'chessCoach_recommendationState';
@@ -98,6 +99,7 @@ export async function loadUserStats(user: any): Promise<UserStats> {
     reportCard: null,
     recommendationState: null,
     coachMemory: localStorage.getItem('chess_coach_memory') || '',
+    unlockedAchievements: JSON.parse(localStorage.getItem('chess_coach_unlocked_achievements') || '[]'),
   };
   
   try {
@@ -135,7 +137,7 @@ export async function loadUserStats(user: any): Promise<UserStats> {
   try {
     const { data, error } = await supabase
       .from('profiles')
-      .select('skill_level, elo_rating, game_history, report_card, recommendation_state, coach_memory')
+      .select('skill_level, elo_rating, game_history, report_card, recommendation_state, coach_memory, unlocked_achievements')
       .eq('id', user.id)
       .maybeSingle();
 
@@ -147,6 +149,7 @@ export async function loadUserStats(user: any): Promise<UserStats> {
         reportCard: data.report_card ?? localStats.reportCard,
         recommendationState: data.recommendation_state ?? localStats.recommendationState,
         coachMemory: data.coach_memory ?? localStats.coachMemory,
+        unlockedAchievements: data.unlocked_achievements ?? localStats.unlockedAchievements,
       };
     }
   } catch (e) {
@@ -163,6 +166,7 @@ export async function loadUserStats(user: any): Promise<UserStats> {
       reportCard: metadata.reportCard || null,
       recommendationState: metadata.recommendationState ?? null,
       coachMemory: metadata.coachMemory || '',
+      unlockedAchievements: metadata.unlockedAchievements || localStats.unlockedAchievements,
     };
   }
 
@@ -184,6 +188,9 @@ export async function saveUserStats(user: any, stats: UserStats): Promise<void> 
   if (stats.coachMemory !== undefined) {
     localStorage.setItem('chess_coach_memory', stats.coachMemory);
   }
+  if (stats.unlockedAchievements !== undefined) {
+    localStorage.setItem('chess_coach_unlocked_achievements', JSON.stringify(stats.unlockedAchievements));
+  }
 
   if (!supabase || !user) {
     return;
@@ -192,18 +199,25 @@ export async function saveUserStats(user: any, stats: UserStats): Promise<void> 
   // 1. Try saving to "profiles" table
   let tableSavedSuccess = false;
   try {
+    const upsertPayload: any = {
+      id: user.id,
+      skill_level: stats.skillLevel,
+      elo_rating: stats.eloRating,
+      game_history: stats.careerHistory,
+      report_card: stats.reportCard,
+      recommendation_state: stats.recommendationState,
+      coach_memory: stats.coachMemory || '',
+      updated_at: new Date().toISOString(),
+    };
+    
+    // Dynamically add unlocked_achievements if table schema supports it
+    if (stats.unlockedAchievements !== undefined) {
+      upsertPayload.unlocked_achievements = stats.unlockedAchievements;
+    }
+
     const { error } = await supabase
       .from('profiles')
-      .upsert({
-        id: user.id,
-        skill_level: stats.skillLevel,
-        elo_rating: stats.eloRating,
-        game_history: stats.careerHistory,
-        report_card: stats.reportCard,
-        recommendation_state: stats.recommendationState,
-        coach_memory: stats.coachMemory || '',
-        updated_at: new Date().toISOString(),
-      });
+      .upsert(upsertPayload);
 
     if (!error) {
       tableSavedSuccess = true;
@@ -222,6 +236,7 @@ export async function saveUserStats(user: any, stats: UserStats): Promise<void> 
         reportCard: stats.reportCard,
         recommendationState: stats.recommendationState,
         coachMemory: stats.coachMemory || '',
+        unlockedAchievements: stats.unlockedAchievements || [],
       },
     });
   } catch (e) {

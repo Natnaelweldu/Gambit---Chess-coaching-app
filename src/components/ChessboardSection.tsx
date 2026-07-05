@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Chess } from 'chess.js';
-import { Sparkles, RefreshCw, Eye, EyeOff, Trophy, Flame, ChevronRight, Zap, Play, CheckCircle, Palette } from 'lucide-react';
+import { Sparkles, RefreshCw, Eye, EyeOff, Trophy, Flame, ChevronRight, Zap, Play, CheckCircle, Palette, Activity } from 'lucide-react';
+import { classifyChessMove, CLASSIFICATION_META, MoveClassificationType, CLASSIFICATION_WEIGHTS } from '../lib/analytics';
 
 // Standard, classic, and completely uniform Wikipedia chess pieces
 const ChessPiece: React.FC<{ type: string; isWhite: boolean }> = ({ type, isWhite }) => {
@@ -94,6 +95,7 @@ interface ChessboardSectionProps {
     inCheck: boolean;
     isAiThinking: boolean;
     lastMove: { from: string; to: string } | null;
+    resigned?: boolean;
   }) => void;
   highlightedSquares?: string[];
   coachHintActive: boolean;
@@ -133,6 +135,20 @@ export const ChessboardSection: React.FC<ChessboardSectionProps> = ({
 
   // Stockfish Web Worker
   const workerRef = useRef<Worker | null>(null);
+
+  // Live Move Review/Analysis classifications
+  const [liveMoveClassifications, setLiveMoveClassifications] = useState<{
+    san: string;
+    classification: MoveClassificationType;
+    player: 'white' | 'black';
+  }[]>([]);
+
+  const userAccuracy = React.useMemo(() => {
+    const userMoves = liveMoveClassifications.filter((c) => c.player === 'white');
+    if (userMoves.length === 0) return 100;
+    const totalWeight = userMoves.reduce((sum, m) => sum + CLASSIFICATION_WEIGHTS[m.classification], 0);
+    return Math.round(totalWeight / userMoves.length);
+  }, [liveMoveClassifications]);
 
   // Parse Chess.js 2D board state
   const syncBoardFromChess = () => {
@@ -231,7 +247,22 @@ export const ChessboardSection: React.FC<ChessboardSectionProps> = ({
 
     try {
       const isCapture = chessRef.current.get(to as any) !== null;
-      chessRef.current.move({ from, to, promotion });
+      const moveResult = chessRef.current.move({ from, to, promotion });
+      
+      if (moveResult) {
+        const isGameOver = chessRef.current.isGameOver();
+        const isCheckmate = chessRef.current.isCheckmate();
+        const classification = classifyChessMove(
+          { san: moveResult.san, piece: moveResult.piece, captured: moveResult.captured || undefined },
+          chessRef.current.history().length,
+          chessRef.current.inCheck(),
+          isCheckmate
+        );
+        setLiveMoveClassifications((prev) => [
+          ...prev,
+          { san: moveResult.san, classification, player: 'black' }
+        ]);
+      }
       
       setLastMove({ from, to });
       setIsAiThinking(false);
@@ -303,6 +334,19 @@ export const ChessboardSection: React.FC<ChessboardSectionProps> = ({
           setLegalTargets([]);
           setCoachHintActive(false);
 
+          // Classify User's move
+          const isCheckmate = chessRef.current.isCheckmate();
+          const classification = classifyChessMove(
+            { san: moveResult.san, piece: moveResult.piece, captured: moveResult.captured || undefined },
+            chessRef.current.history().length,
+            chessRef.current.inCheck(),
+            isCheckmate
+          );
+          setLiveMoveClassifications((prev) => [
+            ...prev,
+            { san: moveResult.san, classification, player: 'white' }
+          ]);
+
           // Sync game states immediately
           syncBoardFromChess();
 
@@ -348,9 +392,36 @@ export const ChessboardSection: React.FC<ChessboardSectionProps> = ({
     setGameOverResult(null);
     setIsAiThinking(false);
     setCoachHintActive(false);
+    setLiveMoveClassifications([]); // Clear live move review!
 
     // Initial sync
     syncBoardFromChess();
+  };
+
+  const handleDemandResignation = () => {
+    // Check if at least 4 half-moves (2 full moves) or a basic count is completed
+    const moves = chessRef.current.history();
+    if (moves.length < 4) {
+      alert("The AI Coach Stockfish refuses to resign this early! Play at least 2 full moves (4 half-moves) first.");
+      return;
+    }
+
+    // Force engine concession
+    setGameOverResult('win');
+    playChessSound('gameover');
+
+    if (onGameUpdate) {
+      onGameUpdate({
+        fen: chessRef.current.fen(),
+        history: chessRef.current.history(),
+        isGameOver: true,
+        result: 'win',
+        inCheck: chessRef.current.inCheck(),
+        isAiThinking: false,
+        lastMove,
+        resigned: true,
+      });
+    }
   };
 
   // IMPORTANT: every branch below must only use non-dimensional properties (background
@@ -466,6 +537,19 @@ export const ChessboardSection: React.FC<ChessboardSectionProps> = ({
             <RefreshCw className="w-3.5 h-3.5" />
             <span className="text-xs font-semibold">Restart</span>
           </button>
+
+          {/* Concede Stockfish button */}
+          {!gameOverResult && (
+            <button
+              id="demand-ai-resignation-button"
+              onClick={handleDemandResignation}
+              className="p-2 bg-slate-900 hover:bg-red-950/40 text-slate-400 hover:text-red-400 border border-slate-800 hover:border-red-950/50 rounded-xl transition-all flex items-center gap-1 cursor-pointer"
+              title="Demand Stockfish Resignation"
+            >
+              <Zap className="w-3.5 h-3.5 text-amber-500 animate-pulse" />
+              <span className="text-xs font-semibold">Concede Stockfish</span>
+            </button>
+          )}
         </div>
       </div>
 
@@ -505,128 +589,201 @@ export const ChessboardSection: React.FC<ChessboardSectionProps> = ({
       </div>
 
       {/* Main Board Stage wrapper */}
-      <div className="flex-1 flex items-center justify-center min-h-[320px] md:min-h-[400px] py-2 relative">
-        <div className="w-full max-w-[460px] aspect-square relative bg-slate-900/30 p-2 md:p-3 rounded-2xl border border-slate-800/80 shadow-2xl flex flex-col justify-between">
-          
-          {/* Vertical Ranks labels (Numbers on Left side) */}
-          <div className="absolute left-1 top-3 bottom-3 flex flex-col justify-between text-[10px] md:text-xs font-mono font-bold text-slate-500 pointer-events-none z-10 w-4 pl-0.5">
-            {RANKS.map((rank) => (
-              <div key={rank} className="h-full flex items-center justify-start">
-                {rank}
-              </div>
-            ))}
+      <div className="flex-1 flex flex-col lg:flex-row items-stretch justify-center gap-6 py-2 relative min-h-0">
+        
+        {/* Left Side: Interactive Board */}
+        <div className="flex-1 flex items-center justify-center min-h-[320px] md:min-h-[400px] relative">
+          <div className="w-full max-w-[460px] aspect-square relative bg-slate-900/30 p-2 md:p-3 rounded-2xl border border-slate-800/80 shadow-2xl flex flex-col justify-between">
+            
+            {/* Vertical Ranks labels (Numbers on Left side) */}
+            <div className="absolute left-1 top-3 bottom-3 flex flex-col justify-between text-[10px] md:text-xs font-mono font-bold text-slate-500 pointer-events-none z-10 w-4 pl-0.5">
+              {RANKS.map((rank) => (
+                <div key={rank} className="h-full flex items-center justify-start">
+                  {rank}
+                </div>
+              ))}
+            </div>
+
+            {/* Actual 8x8 Board Container */}
+            <div className="flex-1 grid grid-cols-8 grid-rows-8 gap-0 rounded-xl overflow-hidden border border-slate-950/80 pl-3 md:pl-4 pb-3 md:pb-4 relative">
+              {board.map((row, rIdx) =>
+                row.map((piece, cIdx) => {
+                  const squareName = getSquareName(rIdx, cIdx);
+                  const isSelected = selectedSquare?.r === rIdx && selectedSquare?.c === cIdx;
+                  const isHighlighted = highlightedSquares.includes(squareName);
+                  const isHint = isHintSquare(squareName);
+                  const isLast = (lastMove?.from === squareName || lastMove?.to === squareName);
+                  const isTarget = legalTargets.includes(squareName);
+                  const isWhite = piece ? piece === piece.toUpperCase() : false;
+                  const kingInCheck = isKingInCheckSquare(squareName);
+
+                  return (
+                    <div
+                      key={`${rIdx}-${cIdx}`}
+                      id={`square-${squareName}`}
+                      onClick={() => handleSquareClick(rIdx, cIdx)}
+                      className={`relative aspect-square flex items-center justify-center cursor-pointer transition-colors duration-150 select-none touch-manipulation ${getSquareBg(
+                        rIdx,
+                        cIdx,
+                        isSelected,
+                        isHighlighted,
+                        isHint,
+                        isLast
+                      )}`}
+                    >
+                      {/* Glowing coordinate lines when Hint is Active */}
+                      {coachHintActive && squareName === 'f7' && (
+                        <div className="absolute inset-0 bg-red-500/10 ring-4 ring-red-500/70 animate-pulse rounded-sm pointer-events-none" />
+                      )}
+
+                      {/* Glowing coordinate red circle when King is in Check */}
+                      {kingInCheck && (
+                        <div className="absolute inset-0 bg-rose-500/30 ring-4 ring-rose-500 shadow-lg shadow-rose-500/50 animate-pulse rounded-md pointer-events-none z-10" />
+                      )}
+
+                      {/* Chess Piece with animation */}
+                      {piece && (
+                        <motion.div
+                          initial={{ scale: 0.85, opacity: 0 }}
+                          animate={{ scale: 1, opacity: 1 }}
+                          className="w-full h-full flex items-center justify-center z-10 hover:scale-105 transition-transform"
+                        >
+                          <ChessPiece type={piece} isWhite={isWhite} />
+                        </motion.div>
+                      )}
+
+                      {/* Legal target move visual indicator dots */}
+                      {isTarget && (
+                        <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-20">
+                          {piece ? (
+                            // Capture target: bracket layout ring
+                            <div className="w-4/5 h-4/5 border-2 border-dashed border-amber-500/80 rounded-full animate-spin" style={{ animationDuration: '8s' }} />
+                          ) : (
+                            // Standard move target: central solid dot
+                            <div className="w-3 h-3 rounded-full bg-amber-500/75 shadow-lg shadow-amber-500/50" />
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })
+              )}
+            </div>
+
+            {/* Horizontal Files labels (Letters on Bottom) */}
+            <div className="h-4 pl-4 md:pl-5 flex justify-between text-[10px] md:text-xs font-mono font-bold text-slate-500 pointer-events-none select-none">
+              {FILES.map((file) => (
+                <div key={file} className="w-full text-center">
+                  {file}
+                </div>
+              ))}
+            </div>
+
           </div>
 
-          {/* Actual 8x8 Board Container */}
-          <div className="flex-1 grid grid-cols-8 grid-rows-8 gap-0 rounded-xl overflow-hidden border border-slate-950/80 pl-3 md:pl-4 pb-3 md:pb-4 relative">
-            {board.map((row, rIdx) =>
-              row.map((piece, cIdx) => {
-                const squareName = getSquareName(rIdx, cIdx);
-                const isSelected = selectedSquare?.r === rIdx && selectedSquare?.c === cIdx;
-                const isHighlighted = highlightedSquares.includes(squareName);
-                const isHint = isHintSquare(squareName);
-                const isLast = (lastMove?.from === squareName || lastMove?.to === squareName);
-                const isTarget = legalTargets.includes(squareName);
-                const isWhite = piece ? piece === piece.toUpperCase() : false;
-                const kingInCheck = isKingInCheckSquare(squareName);
+          {/* GameOver overlay */}
+          <AnimatePresence>
+            {gameOverResult && (
+              <motion.div
+                initial={{ opacity: 0, scale: 0.95 }}
+                animate={{ opacity: 1, scale: 1 }}
+                exit={{ opacity: 0, scale: 0.95 }}
+                className="absolute inset-0 bg-slate-950/90 flex flex-col items-center justify-center text-center p-6 rounded-2xl border border-slate-800 z-50 backdrop-blur-md"
+              >
+                <div className="w-16 h-16 bg-amber-500/10 text-amber-400 rounded-full flex items-center justify-center border border-amber-500/30 mb-4">
+                  <Trophy className="w-8 h-8" />
+                </div>
+                <h3 className="font-display font-black text-2xl text-white tracking-wide">
+                  {gameOverResult === 'win' ? 'Victory is Yours!' : gameOverResult === 'loss' ? 'Better Luck Next Time!' : 'Stalemate / Draw!'}
+                </h3>
+                <p className="text-sm text-slate-400 mt-2 max-w-xs leading-relaxed">
+                  {gameOverResult === 'win' 
+                    ? 'Fantastic execution! You completely outmaneuvered Stockfish AI.' 
+                    : gameOverResult === 'loss' 
+                      ? 'The AI delivered checkmate. Let\'s review your mistakes and try again!' 
+                      : 'A beautifully contested game ending in an equal draw.'}
+                </p>
+                <button
+                  id="play-again-button"
+                  onClick={() => handleResetOrChangeMode(gameMode)}
+                  className="mt-6 bg-amber-600 hover:bg-amber-500 text-slate-950 font-bold px-6 py-2.5 rounded-xl shadow-lg hover:shadow-amber-500/20 transition-all text-sm flex items-center gap-2 cursor-pointer"
+                >
+                  <RefreshCw className="w-4 h-4" />
+                  <span>Play Again</span>
+                </button>
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </div>
 
+        {/* Right Side: Live Move Review Sidebar */}
+        <div className="w-full lg:w-[260px] xl:w-[280px] bg-slate-950/40 border border-slate-900 rounded-xl p-3 flex flex-col gap-3 min-h-0">
+          <div className="flex items-center gap-2 pb-2 border-b border-slate-900/60">
+            <Activity className="w-4 h-4 text-amber-500" />
+            <h3 className="font-display font-semibold text-xs text-white uppercase tracking-wider">Live Move Analysis</h3>
+          </div>
+          
+          {/* Accuracy Gauge / Metric */}
+          <div className="bg-slate-900/40 border border-slate-900 rounded-lg p-2.5 flex items-center justify-between">
+            <div>
+              <span className="text-[9px] uppercase tracking-wider text-slate-500 font-bold block">My Accuracy</span>
+              <span className="text-xl font-display font-black text-emerald-400 font-mono">
+                {userAccuracy}%
+              </span>
+            </div>
+            <div className="text-[10px] text-slate-400 max-w-[130px] text-right italic leading-snug">
+              {liveMoveClassifications.filter(c => c.player === 'white').length === 0 
+                ? "Play a move to start evaluation!"
+                : userAccuracy > 85 
+                  ? "Masterful play!"
+                  : userAccuracy > 65 
+                    ? "Solid chess." 
+                    : "Inaccuracies spotted."}
+            </div>
+          </div>
+
+          {/* Classification chiclets counters */}
+          <div className="grid grid-cols-4 gap-1 text-center">
+            {Object.keys(CLASSIFICATION_META).map((type) => {
+              const meta = CLASSIFICATION_META[type as MoveClassificationType];
+              const count = liveMoveClassifications.filter(c => c.player === 'white' && c.classification === type).length;
+              return (
+                <div key={type} className="bg-slate-900/20 border border-slate-900/40 rounded py-1 px-0.5" title={`${meta.label}: ${meta.desc}`}>
+                  <div className="text-xs">{meta.icon}</div>
+                  <div className="text-[8px] font-semibold text-slate-500 truncate">{meta.label.split(' ')[0]}</div>
+                  <div className={`text-[10px] font-mono font-bold ${meta.color}`}>{count}</div>
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Move Feed List */}
+          <div className="flex-1 overflow-y-auto max-h-[140px] lg:max-h-[220px] divide-y divide-slate-900/40 pr-1 flex flex-col gap-1.5 scrollbar-thin">
+            {liveMoveClassifications.length === 0 ? (
+              <div className="h-full flex flex-col items-center justify-center text-center text-slate-500 py-10">
+                <span className="text-xl">📊</span>
+                <span className="text-[9px] mt-1.5 font-mono uppercase tracking-wider text-slate-500">Awaiting Moves</span>
+              </div>
+            ) : (
+              [...liveMoveClassifications].reverse().map((move, idx) => {
+                const meta = CLASSIFICATION_META[move.classification];
                 return (
-                  <div
-                    key={`${rIdx}-${cIdx}`}
-                    id={`square-${squareName}`}
-                    onClick={() => handleSquareClick(rIdx, cIdx)}
-                    className={`relative aspect-square flex items-center justify-center cursor-pointer transition-colors duration-150 select-none touch-manipulation ${getSquareBg(
-                      rIdx,
-                      cIdx,
-                      isSelected,
-                      isHighlighted,
-                      isHint,
-                      isLast
-                    )}`}
-                  >
-                    {/* Glowing coordinate lines when Hint is Active */}
-                    {coachHintActive && squareName === 'f7' && (
-                      <div className="absolute inset-0 bg-red-500/10 ring-4 ring-red-500/70 animate-pulse rounded-sm pointer-events-none" />
-                    )}
-
-                    {/* Glowing coordinate red circle when King is in Check */}
-                    {kingInCheck && (
-                      <div className="absolute inset-0 bg-rose-500/30 ring-4 ring-rose-500 shadow-lg shadow-rose-500/50 animate-pulse rounded-md pointer-events-none z-10" />
-                    )}
-
-                    {/* Chess Piece with animation */}
-                    {piece && (
-                      <motion.div
-                        initial={{ scale: 0.85, opacity: 0 }}
-                        animate={{ scale: 1, opacity: 1 }}
-                        className="w-full h-full flex items-center justify-center z-10 hover:scale-105 transition-transform"
-                      >
-                        <ChessPiece type={piece} isWhite={isWhite} />
-                      </motion.div>
-                    )}
-
-                    {/* Legal target move visual indicator dots */}
-                    {isTarget && (
-                      <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-20">
-                        {piece ? (
-                          // Capture target: bracket layout ring
-                          <div className="w-4/5 h-4/5 border-2 border-dashed border-amber-500/80 rounded-full animate-spin" style={{ animationDuration: '8s' }} />
-                        ) : (
-                          // Standard move target: central solid dot
-                          <div className="w-3 h-3 rounded-full bg-amber-500/75 shadow-lg shadow-amber-500/50" />
-                        )}
-                      </div>
-                    )}
+                  <div key={idx} className="flex items-center justify-between py-1.5 text-xs first:pt-0">
+                    <div className="flex items-center gap-1.5">
+                      <span className={`w-1.5 h-1.5 rounded-full ${move.player === 'white' ? 'bg-amber-400 animate-pulse' : 'bg-slate-400'}`} />
+                      <span className="font-mono text-slate-300 font-bold">{move.san}</span>
+                      <span className="text-[9px] text-slate-500 font-semibold uppercase">{move.player === 'white' ? 'You' : 'Stockfish'}</span>
+                    </div>
+                    <div className={`flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-semibold ${meta.bg} ${meta.color} ${meta.border} border`}>
+                      <span>{meta.icon}</span>
+                      <span className="font-bold tracking-wide">{meta.label}</span>
+                    </div>
                   </div>
                 );
               })
             )}
           </div>
-
-          {/* Horizontal Files labels (Letters on Bottom) */}
-          <div className="h-4 pl-4 md:pl-5 flex justify-between text-[10px] md:text-xs font-mono font-bold text-slate-500 pointer-events-none select-none">
-            {FILES.map((file) => (
-              <div key={file} className="w-full text-center">
-                {file}
-              </div>
-            ))}
-          </div>
-
         </div>
-
-        {/* GameOver overlay */}
-        <AnimatePresence>
-          {gameOverResult && (
-            <motion.div
-              initial={{ opacity: 0, scale: 0.95 }}
-              animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0, scale: 0.95 }}
-              className="absolute inset-0 bg-slate-950/90 flex flex-col items-center justify-center text-center p-6 rounded-2xl border border-slate-800 z-50 backdrop-blur-md"
-            >
-              <div className="w-16 h-16 bg-amber-500/10 text-amber-400 rounded-full flex items-center justify-center border border-amber-500/30 mb-4">
-                <Trophy className="w-8 h-8" />
-              </div>
-              <h3 className="font-display font-black text-2xl text-white tracking-wide">
-                {gameOverResult === 'win' ? 'Victory is Yours!' : gameOverResult === 'loss' ? 'Better Luck Next Time!' : 'Stalemate / Draw!'}
-              </h3>
-              <p className="text-sm text-slate-400 mt-2 max-w-xs leading-relaxed">
-                {gameOverResult === 'win' 
-                  ? 'Fantastic execution! You completely outmaneuvered Stockfish AI.' 
-                  : gameOverResult === 'loss' 
-                    ? 'The AI delivered checkmate. Let\'s review your mistakes and try again!' 
-                    : 'A beautifully contested game ending in an equal draw.'}
-              </p>
-              <button
-                id="play-again-button"
-                onClick={() => handleResetOrChangeMode(gameMode)}
-                className="mt-6 bg-amber-600 hover:bg-amber-500 text-slate-950 font-bold px-6 py-2.5 rounded-xl shadow-lg hover:shadow-amber-500/20 transition-all text-sm flex items-center gap-2 cursor-pointer"
-              >
-                <RefreshCw className="w-4 h-4" />
-                <span>Play Again</span>
-              </button>
-            </motion.div>
-          )}
-        </AnimatePresence>
       </div>
 
       {/* Board bottom metadata / PGN history bar */}

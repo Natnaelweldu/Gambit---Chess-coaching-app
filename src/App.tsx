@@ -1,15 +1,17 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { motion } from 'motion/react';
 import { ChessboardSection } from './components/ChessboardSection';
 import { CoachChatSection } from './components/CoachChatSection';
 import { RecommendationsSection } from './components/RecommendationsSection';
 import { ChessReportCard } from './components/ChessReportCard';
+import { PerformanceHub } from './components/PerformanceHub';
 import { CoachProfile, RecommendationState } from './types';
-import { Shield, Sparkles, Trophy, BookOpen, Clock, Activity, Users, History, TrendingUp, Trash2, Award, Loader2 } from 'lucide-react';
+import { Shield, Sparkles, Trophy, BookOpen, Clock, Activity, Users, History, TrendingUp, Trash2, Award, Loader2, Flame, Play } from 'lucide-react';
 import { supabase, loadUserStats, saveUserStats } from './lib/supabase';
 import { SupabaseAuthModal } from './components/SupabaseAuthModal';
 import { AuthGateway } from './components/AuthGateway';
 import { buildRecommendationState, isAnalysisCheckpoint, RECOMMENDATION_CYCLE_LENGTH } from './lib/recommendationEngine';
+import { getDeterministicGameAnalysis, getLifetimeMoveProfile, CLASSIFICATION_META, MoveClassificationType } from './lib/analytics';
 
 const DEFAULT_COACH: CoachProfile = {
   name: 'Garry',
@@ -60,6 +62,10 @@ export default function App() {
     return saved ? JSON.parse(saved) : [];
   });
 
+  const lifetimeProfile = useMemo(() => {
+    return getLifetimeMoveProfile(careerHistory);
+  }, [careerHistory]);
+
   const [coachMemory, setCoachMemory] = useState<string>(() => {
     return localStorage.getItem('chess_coach_memory') || '';
   });
@@ -73,6 +79,19 @@ export default function App() {
       return null;
     }
   });
+
+  // Gamified achievements states
+  const [unlockedAchievements, setUnlockedAchievements] = useState<string[]>(() => {
+    try {
+      const saved = localStorage.getItem('chess_coach_unlocked_achievements');
+      return saved ? JSON.parse(saved) : [];
+    } catch (e) {
+      return [];
+    }
+  });
+
+  // View context switcher state
+  const [viewMode, setViewMode] = useState<'game' | 'performance'>('game');
 
   // Setter wrapper that propagates to state and localStorage (and Supabase if authenticated)
   const setSkillLevel = (lvl: number) => {
@@ -93,6 +112,7 @@ export default function App() {
       reportCard: reportCardObj,
       recommendationState: recommendationState,
       coachMemory: coachMemory,
+      unlockedAchievements: unlockedAchievements,
     });
   };
 
@@ -104,6 +124,11 @@ export default function App() {
     setCareerHistory(stats.careerHistory);
     setRecommendationState(stats.recommendationState || null);
     setCoachMemory(stats.coachMemory || '');
+    
+    const achs = stats.unlockedAchievements || [];
+    setUnlockedAchievements(achs);
+    localStorage.setItem('chess_coach_unlocked_achievements', JSON.stringify(achs));
+
     if (stats.reportCard) {
       localStorage.setItem('chessCoach_reportCard', JSON.stringify(stats.reportCard));
       window.dispatchEvent(new Event("reportCardUpdated"));
@@ -167,7 +192,7 @@ export default function App() {
   }, []);
 
   // Function to asynchronously generate recommendations via our new dynamic backend endpoint
-  const fetchDynamicRecommendations = async (updatedHistory: any[], targetSkill: number, targetElo: string, reportCardObj: any) => {
+  const fetchDynamicRecommendations = async (updatedHistory: any[], targetSkill: number, targetElo: string, reportCardObj: any, targetAchievements?: string[]) => {
     try {
       const recentGames = updatedHistory.slice(0, RECOMMENDATION_CYCLE_LENGTH).map((g) => ({
         result: g.result,
@@ -210,6 +235,7 @@ export default function App() {
         reportCard: reportCardObj,
         recommendationState: data,
         coachMemory: coachMemory,
+        unlockedAchievements: targetAchievements || unlockedAchievements,
       });
     } catch (err) {
       console.error('Failed to retrieve dynamic recommendations, using local generator fallback:', err);
@@ -231,12 +257,13 @@ export default function App() {
         reportCard: reportCardObj,
         recommendationState: fallbackState,
         coachMemory: coachMemory,
+        unlockedAchievements: targetAchievements || unlockedAchievements,
       });
     }
   };
 
   // Function to process a finished game
-  const trackGameOutcome = (result: 'win' | 'loss' | 'draw') => {
+  const trackGameOutcome = (result: 'win' | 'loss' | 'draw', resigned?: boolean) => {
     if (outcomeRecorded) return;
     setOutcomeRecorded(true);
 
@@ -269,6 +296,7 @@ export default function App() {
       eloAfter: newEloStr,
       eloChange: eloChange >= 0 ? `+${eloChange}` : `${eloChange}`,
       movesCount: gameHistory.length || 1,
+      resigned: resigned || false,
     };
 
     const updatedHistory = [newRecord, ...careerHistory];
@@ -277,6 +305,48 @@ export default function App() {
     localStorage.setItem('chess_coach_skill_level', newSkill.toString());
     localStorage.setItem('chess_coach_elo_rating', newEloStr);
     localStorage.setItem('chess_coach_game_history', JSON.stringify(updatedHistory));
+
+    // --- Achievement Unlocking Logic ---
+    const updatedAchievementsList = [...unlockedAchievements];
+    let unlockedAny = false;
+
+    if (result === 'win') {
+      // 1. "First Blood"
+      if (!updatedAchievementsList.includes('first-blood')) {
+        updatedAchievementsList.push('first-blood');
+        unlockedAny = true;
+      }
+
+      // 2. "Ruthless Efficiency"
+      if ((gameHistory.length || 1) <= 20 && !resigned) {
+        if (!updatedAchievementsList.includes('ruthless-efficiency')) {
+          updatedAchievementsList.push('ruthless-efficiency');
+          unlockedAny = true;
+        }
+      }
+
+      // 3. "Tactical Overkill"
+      const analysis = getDeterministicGameAnalysis(newRecord);
+      if (analysis.accuracy > 85) {
+        if (!updatedAchievementsList.includes('tactical-overkill')) {
+          updatedAchievementsList.push('tactical-overkill');
+          unlockedAny = true;
+        }
+      }
+
+      // 4. "Existential Dread"
+      if (resigned) {
+        if (!updatedAchievementsList.includes('existential-dread')) {
+          updatedAchievementsList.push('existential-dread');
+          unlockedAny = true;
+        }
+      }
+    }
+
+    if (unlockedAny) {
+      setUnlockedAchievements(updatedAchievementsList);
+      localStorage.setItem('chess_coach_unlocked_achievements', JSON.stringify(updatedAchievementsList));
+    }
 
     // --- 3-game recommendation cycle ---
     // Only re-analyze and refresh the video recommendations exactly every 3 games
@@ -410,7 +480,7 @@ export default function App() {
     localStorage.setItem('chessCoach_reportCard', JSON.stringify(reportCard));
 
     if (isCheckpoint) {
-      fetchDynamicRecommendations(updatedHistory, newSkill, newEloStr, reportCard);
+      fetchDynamicRecommendations(updatedHistory, newSkill, newEloStr, reportCard, updatedAchievementsList);
     } else {
       saveUserStats(currentUser, {
         skillLevel: newSkill,
@@ -419,6 +489,7 @@ export default function App() {
         reportCard: reportCard,
         recommendationState: recommendationState,
         coachMemory: coachMemory,
+        unlockedAchievements: updatedAchievementsList,
       });
     }
     window.dispatchEvent(new Event("reportCardUpdated"));
@@ -581,6 +652,22 @@ export default function App() {
 
           {/* Header Action CTA & User Auth */}
           <div className="flex items-center gap-3">
+            {currentUser && (
+              <button
+                id="header-performance-hub-button"
+                onClick={() => setViewMode(viewMode === 'game' ? 'performance' : 'game')}
+                className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl border text-[11px] font-bold font-mono uppercase tracking-wider transition-all cursor-pointer active:scale-95 ${
+                  viewMode === 'performance'
+                    ? 'bg-amber-500 text-slate-950 border-amber-500 font-black shadow-lg shadow-amber-500/15'
+                    : 'bg-slate-900/80 hover:bg-slate-800 text-amber-400 hover:text-amber-300 border-slate-800 font-extrabold'
+                }`}
+              >
+                <Trophy className="w-3.5 h-3.5" />
+                <span className="hidden sm:inline">Performance Hub</span>
+                <span className="sm:hidden">Hub</span>
+              </button>
+            )}
+
             <div className="hidden sm:flex items-center gap-2 bg-slate-900/80 border border-slate-800/80 px-3.5 py-1.5 rounded-xl text-xs font-semibold text-slate-300">
               <span className={`inline-block w-2 h-2 rounded-full ${isAiThinking ? 'bg-amber-400 animate-ping' : 'bg-emerald-500'}`}></span>
               <span>{isAiThinking ? 'Stockfish calculating...' : 'Coach Engine Live'}</span>
@@ -637,9 +724,24 @@ export default function App() {
 
       {/* Main Page Stage Body */}
       <main className="flex-1 overflow-y-auto max-w-7xl mx-auto w-full px-4 sm:px-6 lg:px-8 py-6 flex flex-col gap-6 min-h-0">
-        
-        {/* Upper Dashboard Grid (Board & Sidebar) */}
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-stretch lg:h-[600px] xl:h-[660px] shrink-0 min-h-0">
+        {viewMode === 'performance' ? (
+          <motion.div
+            initial={{ opacity: 0, y: 15 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.35 }}
+          >
+            <PerformanceHub
+              careerHistory={careerHistory}
+              unlockedAchievements={unlockedAchievements}
+              eloRating={eloRating}
+              skillLevel={skillLevel}
+              onBack={() => setViewMode('game')}
+            />
+          </motion.div>
+        ) : (
+          <>
+            {/* Upper Dashboard Grid (Board & Sidebar) */}
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-stretch lg:h-[600px] xl:h-[660px] shrink-0 min-h-0">
           
           {/* Main Chessboard Area Container (Left) */}
           <div className="lg:col-span-8 flex flex-col h-full overflow-hidden">
@@ -758,164 +860,391 @@ export default function App() {
             </motion.div>
           )}
 
-          {activeTab === 'career' && (
-            <motion.div
-              initial={{ opacity: 0, y: 10 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.25 }}
-              id="career-progress-container"
-              className="grid grid-cols-1 lg:grid-cols-12 gap-6"
-            >
-              {/* Progress Overview Panel (Left) */}
-              <div className="lg:col-span-5 bg-slate-950/80 border border-slate-800/80 rounded-2xl p-4 md:p-5 backdrop-blur-xl shadow-2xl flex flex-col justify-between">
-                <div>
-                  <div className="flex items-center justify-between mb-4 pb-3 border-b border-slate-900/80">
-                    <h3 className="font-display font-bold text-white text-sm tracking-wide flex items-center gap-2">
-                      <Award className="w-5 h-5 text-amber-400" />
-                      Career Profile & Progress
-                    </h3>
-                    <button
-                      id="reset-career-button"
-                      onClick={handleResetCareer}
-                      className="text-slate-500 hover:text-red-400 transition-colors text-[11px] flex items-center gap-1 cursor-pointer font-semibold"
-                      title="Clear all performance statistics"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                      <span>Reset Stats</span>
-                    </button>
-                  </div>
+          {activeTab === 'career' && (() => {
+            const reversedHistory = [...careerHistory].slice(0, 10).reverse();
+            const elos = reversedHistory.map((g) => {
+              const parsed = parseInt(g.eloAfter);
+              return isNaN(parsed) ? 1200 : parsed;
+            });
+            const minElo = elos.length > 0 ? Math.min(...elos) - 15 : 1100;
+            const maxElo = elos.length > 0 ? Math.max(...elos) + 15 : 1300;
+            const eloRange = maxElo - minElo || 1;
 
-                  {/* Progress Stats Block */}
-                  <div className="grid grid-cols-3 gap-3 mb-5">
-                    <div className="bg-slate-900/50 rounded-xl p-3 border border-slate-900 text-center">
-                      <span className="text-[10px] uppercase tracking-wider text-slate-500 font-bold block mb-1">Estimated Elo</span>
-                      <span className="text-lg md:text-xl font-display font-black text-amber-400 font-mono block">
-                        {eloRating}
-                      </span>
-                    </div>
-                    <div className="bg-slate-900/50 rounded-xl p-3 border border-slate-900 text-center">
-                      <span className="text-[10px] uppercase tracking-wider text-slate-500 font-bold block mb-1">AI Coach Level</span>
-                      <span className="text-lg md:text-xl font-display font-black text-sky-400 font-mono block">
-                        Lv. {skillLevel}
-                      </span>
-                    </div>
-                    <div className="bg-slate-900/50 rounded-xl p-3 border border-slate-900 text-center">
-                      <span className="text-[10px] uppercase tracking-wider text-slate-500 font-bold block mb-1">Total Games</span>
-                      <span className="text-lg md:text-xl font-display font-black text-emerald-400 font-mono block">
-                        {careerHistory.length}
-                      </span>
-                    </div>
-                  </div>
+            const chartWidth = 500;
+            const chartHeight = 110;
+            const points = elos.map((elo, idx) => {
+              const x = elos.length > 1 ? (idx / (elos.length - 1)) * (chartWidth - 60) + 30 : chartWidth / 2;
+              const y = chartHeight - ((elo - minElo) / eloRange) * (chartHeight - 35) - 15;
+              return { x, y, elo, date: reversedHistory[idx].date };
+            });
+            const polylinePoints = points.map(p => `${p.x},${p.y}`).join(' ');
 
-                  {/* Rating Milestones Progress Bar */}
-                  <div className="bg-slate-900/40 border border-slate-900 rounded-xl p-3 mb-4">
-                    <div className="flex items-center justify-between mb-1.5 text-xs text-slate-400">
-                      <span className="font-semibold flex items-center gap-1">
-                        <TrendingUp className="w-3.5 h-3.5 text-amber-400" />
-                        Coach Difficulty Tier
-                      </span>
-                      <span className="font-mono text-slate-400 font-bold">
-                        {skillLevel < 5 ? 'Beginner' : skillLevel < 12 ? 'Intermediate' : 'Expert'} (Max Level 20)
-                      </span>
-                    </div>
-                    <div className="w-full bg-slate-950 h-2.5 rounded-full overflow-hidden border border-slate-900">
-                      <div
-                        className="bg-gradient-to-r from-amber-600 via-amber-400 to-amber-300 h-full rounded-full transition-all duration-500"
-                        style={{ width: `${(skillLevel / 20) * 100}%` }}
-                      />
-                    </div>
-                    <p className="text-[10px] text-slate-500 mt-2 leading-relaxed italic">
-                      *Defeat the Stockfish AI Coach to increase difficulty and boost your rating!
-                    </p>
-                  </div>
-                </div>
+            const totalWins = careerHistory.filter((g) => g.result === 'win').length;
+            const totalLosses = careerHistory.filter((g) => g.result === 'loss').length;
+            const totalDraws = careerHistory.filter((g) => g.result === 'draw').length;
+            const winRate = careerHistory.length > 0 ? Math.round((totalWins / careerHistory.length) * 100) : 0;
 
-                {/* Quick Record Performance Badges */}
-                <div className="bg-slate-900/30 border border-slate-900 rounded-xl p-3 text-xs text-slate-400 flex justify-between items-center mt-2">
-                  <span className="font-semibold">Career Record:</span>
-                  <div className="flex gap-2">
-                    <span className="bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-2 py-0.5 rounded font-mono font-bold text-[10px]" title="Wins">
-                      W: {careerHistory.filter((g) => g.result === 'win').length}
-                    </span>
-                    <span className="bg-rose-500/10 text-rose-400 border border-rose-500/20 px-2 py-0.5 rounded font-mono font-bold text-[10px]" title="Losses">
-                      L: {careerHistory.filter((g) => g.result === 'loss').length}
-                    </span>
-                    <span className="bg-slate-800 text-slate-400 border border-slate-700 px-2 py-0.5 rounded font-mono font-bold text-[10px]" title="Draws">
-                      D: {careerHistory.filter((g) => g.result === 'draw').length}
-                    </span>
-                  </div>
-                </div>
-              </div>
+            const classificationsList = [
+              { label: 'Brilliant', count: lifetimeProfile.brilliant, color: 'text-teal-400', bg: 'bg-teal-500/10', icon: '✨' },
+              { label: 'Best Move', count: lifetimeProfile.best, color: 'text-emerald-400', bg: 'bg-emerald-500/10', icon: '⭐' },
+              { label: 'Excellent', count: lifetimeProfile.excellent, color: 'text-blue-400', bg: 'bg-blue-500/10', icon: '✅' },
+              { label: 'Book Move', count: lifetimeProfile.book, color: 'text-amber-500', bg: 'bg-amber-500/10', icon: '📖' },
+              { label: 'Good Move', count: lifetimeProfile.good, color: 'text-slate-300', bg: 'bg-slate-800/40', icon: '👍' },
+              { label: 'Inaccuracy', count: lifetimeProfile.inaccuracy, color: 'text-yellow-500', bg: 'bg-yellow-500/10', icon: '⚠️' },
+              { label: 'Mistake', count: lifetimeProfile.mistake, color: 'text-orange-500', bg: 'bg-orange-500/10', icon: '❓' },
+              { label: 'Blunder', count: lifetimeProfile.blunder, color: 'text-red-500', bg: 'bg-red-500/10', icon: '❌' },
+            ];
 
-              {/* Career Game History Table (Right) */}
-              <div className="lg:col-span-7 bg-slate-950/80 border border-slate-800/80 rounded-2xl p-4 md:p-5 backdrop-blur-xl shadow-2xl flex flex-col justify-between">
-                <div>
-                  <div className="flex items-center gap-2 mb-4 pb-3 border-b border-slate-900/80">
-                    <History className="w-5 h-5 text-sky-400" />
-                    <h3 className="font-display font-bold text-white text-base tracking-wide">Match History Logs</h3>
-                  </div>
-
-                  {careerHistory.length === 0 ? (
-                    <div className="flex flex-col items-center justify-center text-center py-10">
-                      <div className="w-12 h-12 rounded-full bg-slate-900 border border-slate-800/80 text-slate-500 flex items-center justify-center mb-3">
-                        <History className="w-6 h-6" />
+            return (
+              <motion.div
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.25 }}
+                id="career-progress-container"
+                className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start"
+              >
+                {/* Left Column: Profile & Move Analysis */}
+                <div className="lg:col-span-5 flex flex-col gap-6">
+                  
+                  {/* Progress Overview Panel */}
+                  <div className="bg-slate-950/80 border border-slate-800/80 rounded-2xl p-4 md:p-5 backdrop-blur-xl shadow-2xl flex flex-col justify-between">
+                    <div>
+                      <div className="flex items-center justify-between mb-4 pb-3 border-b border-slate-900/80">
+                        <h3 className="font-display font-bold text-white text-sm tracking-wide flex items-center gap-2">
+                          <Award className="w-5 h-5 text-amber-400" />
+                          Career Profile & Progress
+                        </h3>
+                        <button
+                          id="reset-career-button"
+                          onClick={handleResetCareer}
+                          className="text-slate-500 hover:text-red-400 transition-colors text-[11px] flex items-center gap-1 cursor-pointer font-semibold"
+                          title="Clear all performance statistics"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                          <span>Reset Stats</span>
+                        </button>
                       </div>
-                      <p className="text-xs text-slate-400 font-medium">No recorded matches in this profile session yet.</p>
-                      <p className="text-[10px] text-slate-500 mt-1 max-w-xs leading-relaxed">Play a full game to checkmate or draw and see your ratings persist dynamically here!</p>
-                    </div>
-                  ) : (
-                    <div className="overflow-x-auto max-h-[220px] scrollbar-thin scrollbar-thumb-slate-900">
-                      <table className="w-full text-left border-collapse">
-                        <thead>
-                          <tr className="border-b border-slate-900 text-[10px] uppercase text-slate-500 font-bold">
-                            <th className="pb-2">Date / Time</th>
-                            <th className="pb-2">Outcome</th>
-                            <th className="pb-2">AI Opponent</th>
-                            <th className="pb-2 text-right">Rating Adjustment</th>
-                          </tr>
-                        </thead>
-                        <tbody className="divide-y divide-slate-900/60 text-xs">
-                          {careerHistory.slice(0, 10).map((game) => (
-                            <tr key={game.id} className="hover:bg-slate-900/30">
-                              <td className="py-2.5 text-slate-400 font-medium">
-                                {game.date} <span className="text-[10px] text-slate-500 ml-1">{game.time}</span>
-                              </td>
-                              <td className="py-2.5">
-                                {game.result === 'win' ? (
-                                  <span className="bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-1.5 py-0.5 rounded font-bold uppercase text-[10px]">Victory</span>
-                                ) : game.result === 'loss' ? (
-                                  <span className="bg-rose-500/10 text-rose-400 border border-rose-500/20 px-1.5 py-0.5 rounded font-bold uppercase text-[10px]">Defeat</span>
-                                ) : (
-                                  <span className="bg-slate-800 text-slate-400 border border-slate-700 px-1.5 py-0.5 rounded font-bold uppercase text-[10px]">Draw</span>
-                                )}
-                              </td>
-                              <td className="py-2.5 text-slate-400 font-mono">
-                                Stockfish Lv. {game.skillLevel}
-                              </td>
-                              <td className="py-2.5 text-right font-mono font-bold">
-                                <span className={game.result === 'win' ? 'text-emerald-400' : game.result === 'loss' ? 'text-rose-400' : 'text-slate-400'}>
-                                  {game.eloChange}
-                                </span>
-                                <span className="text-[10px] text-slate-500 font-normal ml-1.5">({game.eloAfter})</span>
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  )}
-                </div>
-                
-                {careerHistory.length > 0 && (
-                  <div className="text-[10px] text-slate-500 mt-3 text-right">
-                    Showing the last {Math.min(10, careerHistory.length)} matches • Preserved locally inside localStorage
-                  </div>
-                )}
-              </div>
-            </motion.div>
-          )}
-        </div>
 
+                      {/* Progress Stats Block */}
+                      <div className="grid grid-cols-3 gap-3 mb-5">
+                        <div className="bg-slate-900/50 rounded-xl p-3 border border-slate-900 text-center">
+                          <span className="text-[10px] uppercase tracking-wider text-slate-500 font-bold block mb-1">Estimated Elo</span>
+                          <span className="text-lg md:text-xl font-display font-black text-amber-400 font-mono block">
+                            {eloRating}
+                          </span>
+                        </div>
+                        <div className="bg-slate-900/50 rounded-xl p-3 border border-slate-900 text-center">
+                          <span className="text-[10px] uppercase tracking-wider text-slate-500 font-bold block mb-1">AI Coach Level</span>
+                          <span className="text-lg md:text-xl font-display font-black text-sky-400 font-mono block">
+                            Lv. {skillLevel}
+                          </span>
+                        </div>
+                        <div className="bg-slate-900/50 rounded-xl p-3 border border-slate-900 text-center">
+                          <span className="text-[10px] uppercase tracking-wider text-slate-500 font-bold block mb-1">Total Games</span>
+                          <span className="text-lg md:text-xl font-display font-black text-emerald-400 font-mono block">
+                            {careerHistory.length}
+                          </span>
+                        </div>
+                      </div>
+
+                      {/* Rating Milestones Progress Bar */}
+                      <div className="bg-slate-900/40 border border-slate-900 rounded-xl p-3 mb-4">
+                        <div className="flex items-center justify-between mb-1.5 text-xs text-slate-400">
+                          <span className="font-semibold flex items-center gap-1">
+                            <TrendingUp className="w-3.5 h-3.5 text-amber-400" />
+                            Coach Difficulty Tier
+                          </span>
+                          <span className="font-mono text-slate-400 font-bold">
+                            {skillLevel < 5 ? 'Beginner' : skillLevel < 12 ? 'Intermediate' : 'Expert'} (Max Level 20)
+                          </span>
+                        </div>
+                        <div className="w-full bg-slate-950 h-2.5 rounded-full overflow-hidden border border-slate-900">
+                          <div
+                            className="bg-gradient-to-r from-amber-600 via-amber-400 to-amber-300 h-full rounded-full transition-all duration-500"
+                            style={{ width: `${(skillLevel / 20) * 100}%` }}
+                          />
+                        </div>
+                        <p className="text-[10px] text-slate-500 mt-2 leading-relaxed italic">
+                          *Defeat the Stockfish AI Coach to increase difficulty and boost your rating!
+                        </p>
+                      </div>
+                    </div>
+
+                    {/* Quick Record Performance Badges */}
+                    <div className="bg-slate-900/30 border border-slate-900 rounded-xl p-3 text-xs text-slate-400 flex justify-between items-center mt-2">
+                      <span className="font-semibold">Career Record:</span>
+                      <div className="flex gap-2">
+                        <span className="bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-2 py-0.5 rounded font-mono font-bold text-[10px]" title="Wins">
+                          W: {totalWins}
+                        </span>
+                        <span className="bg-rose-500/10 text-rose-400 border border-rose-500/20 px-2 py-0.5 rounded font-mono font-bold text-[10px]" title="Losses">
+                          L: {totalLosses}
+                        </span>
+                        <span className="bg-slate-800 text-slate-400 border border-slate-700 px-2 py-0.5 rounded font-mono font-bold text-[10px]" title="Draws">
+                          D: {totalDraws}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Lifetime Move Analysis Breakdown */}
+                  <div className="bg-slate-950/80 border border-slate-800/80 rounded-2xl p-4 md:p-5 backdrop-blur-xl shadow-2xl flex flex-col gap-4">
+                    <div className="flex items-center gap-2 pb-3 border-b border-slate-900/80">
+                      <Activity className="w-5 h-5 text-emerald-400" />
+                      <h3 className="font-display font-bold text-white text-sm tracking-wide">Lifetime Move Analysis</h3>
+                    </div>
+
+                    {careerHistory.length === 0 ? (
+                      <div className="text-center py-6 text-slate-500 text-xs italic">
+                        Play games to populate move analysis logs.
+                      </div>
+                    ) : (
+                      <>
+                        {/* Overall Move Accuracy Gauge */}
+                        <div className="flex items-center justify-between bg-slate-900/40 border border-slate-900 rounded-xl p-3.5">
+                          <div>
+                            <span className="text-[10px] uppercase tracking-wider text-slate-500 font-bold block mb-0.5">Average Accuracy</span>
+                            <span className="text-3xl font-display font-black text-emerald-400 font-mono tracking-tight">
+                              {lifetimeProfile.averageAccuracy}%
+                            </span>
+                          </div>
+                          <div className="text-right text-[11px] text-slate-400 max-w-[150px] leading-relaxed">
+                            Based on a total of <strong className="text-slate-200 font-bold font-mono">{lifetimeProfile.totalMoves}</strong> moves played against AI Coach.
+                          </div>
+                        </div>
+
+                        {/* Staggered Chiclets Count */}
+                        <div className="grid grid-cols-2 gap-2 text-xs">
+                          {classificationsList.map((classif) => (
+                            <div key={classif.label} className="bg-slate-900/30 border border-slate-900 p-2 rounded-xl flex items-center justify-between">
+                              <div className="flex items-center gap-2">
+                                <span className="text-sm">{classif.icon}</span>
+                                <span className="text-slate-400 font-semibold">{classif.label}</span>
+                              </div>
+                              <span className={`font-mono font-black ${classif.color}`}>{classif.count}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </>
+                    )}
+                  </div>
+                </div>
+
+                {/* Right Column: Win-Loss Trends & Match Logs */}
+                <div className="lg:col-span-7 flex flex-col gap-6">
+                  
+                  {/* Rating Trend & Win Rate Panel */}
+                  <div className="bg-slate-950/80 border border-slate-800/80 rounded-2xl p-4 md:p-5 backdrop-blur-xl shadow-2xl flex flex-col gap-4">
+                    <div className="flex items-center justify-between pb-3 border-b border-slate-900/80">
+                      <div className="flex items-center gap-2">
+                        <TrendingUp className="w-5 h-5 text-amber-400" />
+                        <h3 className="font-display font-bold text-white text-sm tracking-wide">Rating Trend & Win/Loss Form</h3>
+                      </div>
+                      
+                      {/* Active Streak */}
+                      {lifetimeProfile.streak > 0 && (
+                        <div className="flex items-center gap-1.5 bg-orange-500/10 text-orange-400 border border-orange-500/20 px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider animate-pulse">
+                          <Flame className="w-3.5 h-3.5" />
+                          <span>{lifetimeProfile.streak} {lifetimeProfile.streakType === 'win' ? 'WIN' : 'LOSS'} STREAK</span>
+                        </div>
+                      )}
+                    </div>
+
+                    {careerHistory.length === 0 ? (
+                      <div className="flex flex-col items-center justify-center text-center py-12">
+                        <div className="w-12 h-12 rounded-full bg-slate-900 border border-slate-800/80 text-slate-500 flex items-center justify-center mb-3">
+                          <TrendingUp className="w-6 h-6 animate-pulse" />
+                        </div>
+                        <p className="text-xs text-slate-400 font-semibold">No Performance Rating History</p>
+                        <p className="text-[10px] text-slate-500 mt-1 max-w-xs leading-relaxed">
+                          Your visual Elo rating timeline and active win rate will plot here automatically.
+                        </p>
+                      </div>
+                    ) : (
+                      <div className="flex flex-col md:flex-row gap-5 items-stretch">
+                        
+                        {/* Interactive SVG Chart wrapper */}
+                        <div className="flex-1 bg-slate-900/40 border border-slate-900 rounded-xl p-3.5 flex flex-col justify-between min-h-[140px]">
+                          <span className="text-[10px] uppercase tracking-wider text-slate-500 font-bold mb-2 block">Elo Rating Timeline</span>
+                          <div className="w-full relative flex-grow flex items-center justify-center">
+                            <svg viewBox={`0 0 ${chartWidth} ${chartHeight}`} className="w-full overflow-visible">
+                              {/* Horizontal helper grid lines */}
+                              <line x1="0" y1="20" x2={chartWidth} y2="20" stroke="#1e293b" strokeDasharray="3" strokeWidth="1" />
+                              <line x1="0" y1="55" x2={chartWidth} y2="55" stroke="#1e293b" strokeDasharray="3" strokeWidth="1" />
+                              <line x1="0" y1="90" x2={chartWidth} y2="90" stroke="#1e293b" strokeDasharray="3" strokeWidth="1" />
+
+                              {/* Glowing trend curve line */}
+                              {elos.length > 1 && (
+                                <>
+                                  <path
+                                    d={`M ${points.map(p => `${p.x} ${p.y}`).join(' L ')}`}
+                                    fill="none"
+                                    stroke="url(#chart-glow-grad)"
+                                    strokeWidth="3.5"
+                                    strokeLinecap="round"
+                                    strokeLinejoin="round"
+                                  />
+                                  <path
+                                    d={`M ${points[0].x} ${chartHeight - 10} L ${points.map(p => `${p.x} ${p.y}`).join(' L ')} L ${points[points.length - 1].x} ${chartHeight - 10} Z`}
+                                    fill="url(#chart-area-grad)"
+                                    opacity="0.1"
+                                  />
+                                </>
+                              )}
+
+                              {/* Definition of Gradients */}
+                              <defs>
+                                <linearGradient id="chart-glow-grad" x1="0%" y1="0%" x2="100%" y2="0%">
+                                  <stop offset="0%" stopColor="#d97706" />
+                                  <stop offset="50%" stopColor="#f59e0b" />
+                                  <stop offset="100%" stopColor="#fcd34d" />
+                                </linearGradient>
+                                <linearGradient id="chart-area-grad" x1="0%" y1="0%" x2="0%" y2="100%">
+                                  <stop offset="0%" stopColor="#f59e0b" stopOpacity="1" />
+                                  <stop offset="100%" stopColor="#f59e0b" stopOpacity="0" />
+                                </linearGradient>
+                              </defs>
+
+                              {/* Dot Nodes and text labels */}
+                              {points.map((p, idx) => (
+                                <g key={idx} className="group">
+                                  <circle
+                                    cx={p.x}
+                                    cy={p.y}
+                                    r="4"
+                                    className="fill-amber-400 stroke-slate-950 stroke-[2px] transition-all hover:r-6 cursor-pointer"
+                                  />
+                                  <text
+                                    x={p.x}
+                                    y={p.y - 12}
+                                    textAnchor="middle"
+                                    className="font-mono text-[9px] font-bold fill-amber-300"
+                                  >
+                                    {p.elo}
+                                  </text>
+                                </g>
+                              ))}
+                            </svg>
+                          </div>
+                          <span className="text-[9px] text-slate-500 mt-2 block text-center font-semibold">
+                            Left to Right: Earlier matches ➔ Most recent (Last 10 Games)
+                          </span>
+                        </div>
+
+                        {/* Side performance dial metrics */}
+                        <div className="w-full md:w-44 flex flex-col justify-between gap-3">
+                          <div className="bg-slate-900/40 border border-slate-900 rounded-xl p-3 flex-1 flex flex-col justify-center">
+                            <span className="text-[10px] uppercase tracking-wider text-slate-500 font-bold block mb-1">Win Rate %</span>
+                            <div className="flex items-baseline gap-1">
+                              <span className="text-2xl font-display font-black text-white font-mono">{winRate}%</span>
+                              <span className="text-xs text-slate-500">ratio</span>
+                            </div>
+                            <div className="w-full bg-slate-950 h-1.5 rounded-full mt-2 overflow-hidden border border-slate-900">
+                              <div className="bg-emerald-400 h-full rounded-full" style={{ width: `${winRate}%` }} />
+                            </div>
+                          </div>
+
+                          {/* Form Guideline row */}
+                          <div className="bg-slate-900/40 border border-slate-900 rounded-xl p-3 flex-1 flex flex-col justify-center">
+                            <span className="text-[10px] uppercase tracking-wider text-slate-500 font-bold block mb-1.5">Recent Form</span>
+                            <div className="flex gap-1.5 justify-start">
+                              {careerHistory.slice(0, 8).map((g) => (
+                                <span
+                                  key={g.id}
+                                  className={`w-5 h-5 rounded-full flex items-center justify-center font-mono font-extrabold text-[9px] border shadow ${
+                                    g.result === 'win'
+                                      ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
+                                      : g.result === 'loss'
+                                        ? 'bg-rose-500/10 text-rose-400 border-rose-500/20'
+                                        : 'bg-slate-800 text-slate-400 border-slate-700'
+                                  }`}
+                                  title={`${g.result === 'win' ? 'Win' : g.result === 'loss' ? 'Loss' : 'Draw'} on ${g.date}`}
+                                >
+                                  {g.result === 'win' ? 'W' : g.result === 'loss' ? 'L' : 'D'}
+                                </span>
+                              ))}
+                            </div>
+                          </div>
+
+                        </div>
+
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Career Game History Table */}
+                  <div className="bg-slate-950/80 border border-slate-800/80 rounded-2xl p-4 md:p-5 backdrop-blur-xl shadow-2xl flex flex-col justify-between">
+                    <div>
+                      <div className="flex items-center gap-2 mb-4 pb-3 border-b border-slate-900/80">
+                        <History className="w-5 h-5 text-sky-400" />
+                        <h3 className="font-display font-bold text-white text-base tracking-wide">Match History Logs</h3>
+                      </div>
+
+                      {careerHistory.length === 0 ? (
+                        <div className="flex flex-col items-center justify-center text-center py-10">
+                          <div className="w-12 h-12 rounded-full bg-slate-900 border border-slate-800/80 text-slate-500 flex items-center justify-center mb-3">
+                            <History className="w-6 h-6" />
+                          </div>
+                          <p className="text-xs text-slate-400 font-medium">No recorded matches in this profile session yet.</p>
+                          <p className="text-[10px] text-slate-500 mt-1 max-w-xs leading-relaxed">Play a full game to checkmate or draw and see your ratings persist dynamically here!</p>
+                        </div>
+                      ) : (
+                        <div className="overflow-x-auto max-h-[220px] scrollbar-thin scrollbar-thumb-slate-900">
+                          <table className="w-full text-left border-collapse">
+                            <thead>
+                              <tr className="border-b border-slate-900 text-[10px] uppercase text-slate-500 font-bold">
+                                <th className="pb-2">Date / Time</th>
+                                <th className="pb-2">Outcome</th>
+                                <th className="pb-2">AI Opponent</th>
+                                <th className="pb-2 text-right">Rating Adjustment</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-slate-900/60 text-xs">
+                              {careerHistory.slice(0, 10).map((game) => (
+                                <tr key={game.id} className="hover:bg-slate-900/30">
+                                  <td className="py-2.5 text-slate-400 font-medium">
+                                    {game.date} <span className="text-[10px] text-slate-500 ml-1">{game.time}</span>
+                                  </td>
+                                  <td className="py-2.5">
+                                    {game.result === 'win' ? (
+                                      <span className="bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-1.5 py-0.5 rounded font-bold uppercase text-[10px]">Victory</span>
+                                    ) : game.result === 'loss' ? (
+                                      <span className="bg-rose-500/10 text-rose-400 border border-rose-500/20 px-1.5 py-0.5 rounded font-bold uppercase text-[10px]">Defeat</span>
+                                    ) : (
+                                      <span className="bg-slate-800 text-slate-400 border border-slate-700 px-1.5 py-0.5 rounded font-bold uppercase text-[10px]">Draw</span>
+                                    )}
+                                  </td>
+                                  <td className="py-2.5 text-slate-400 font-mono">
+                                    Stockfish Lv. {game.skillLevel}
+                                  </td>
+                                  <td className="py-2.5 text-right font-mono font-bold">
+                                    <span className={game.result === 'win' ? 'text-emerald-400' : game.result === 'loss' ? 'text-rose-400' : 'text-slate-400'}>
+                                      {game.eloChange}
+                                    </span>
+                                    <span className="text-[10px] text-slate-500 font-normal ml-1.5">({game.eloAfter})</span>
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      )}
+                    </div>
+                    
+                    {careerHistory.length > 0 && (
+                      <div className="text-[10px] text-slate-500 mt-3 text-right">
+                        Showing the last {Math.min(10, careerHistory.length)} matches • Preserved locally inside localStorage
+                      </div>
+                    )}
+                  </div>
+
+                </div>
+              </motion.div>
+            );
+          })()}
+        </div>
+          </>
+        )}
       </main>
 
       {/* Sub Footer details */}
