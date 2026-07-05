@@ -27,6 +27,7 @@ import { getDeterministicGameAnalysis, getLifetimeMoveProfile, getTacticalSharpn
 
 interface PerformanceHubProps {
   currentUser?: any;
+  currentSession?: any;
   careerHistory: any[];
   unlockedAchievements: string[];
   eloRating: string;
@@ -53,6 +54,7 @@ const DEFAULT_RIVALS: Rival[] = [
 
 export const PerformanceHub: React.FC<PerformanceHubProps> = ({
   currentUser,
+  currentSession,
   careerHistory,
   unlockedAchievements,
   eloRating,
@@ -151,7 +153,7 @@ export const PerformanceHub: React.FC<PerformanceHubProps> = ({
 
   // Live database loader helper
   const fetchRivals = async () => {
-    if (!supabase || !currentUser) return;
+    if (!supabase || !currentUser || !currentSession) return;
     setLoadingDbRivals(true);
     try {
       // Step 1: Query the user_rivalries table for tracked rival IDs
@@ -205,7 +207,7 @@ export const PerformanceHub: React.FC<PerformanceHubProps> = ({
   // On mount and user update: Upsert current user profile & load list
   useEffect(() => {
     const syncAndFetch = async () => {
-      if (!supabase || !currentUser) return;
+      if (!supabase || !currentUser || !currentSession) return;
       
       try {
         const eloNum = parseInt(eloRating.replace(/[^0-9]/g, '')) || 1200;
@@ -229,12 +231,12 @@ export const PerformanceHub: React.FC<PerformanceHubProps> = ({
     };
 
     syncAndFetch();
-  }, [currentUser, eloRating, computedDelta]);
+  }, [currentUser, currentSession, eloRating, computedDelta]);
 
   // Handle Rivalry Synchronization Delta Refresh trigger button
   const handleRivalSync = async () => {
     setSyncing(true);
-    if (currentUser && supabase) {
+    if (currentUser && currentSession && supabase) {
       // Re-query database live stats
       await fetchRivals();
       showToast('Live database pipeline synchronized with latest profiles!', 'success');
@@ -267,7 +269,7 @@ export const PerformanceHub: React.FC<PerformanceHubProps> = ({
     if (!inputVal) return;
 
     // Database mode: lookup by email with REGISTRATION VERIFICATION GUARD
-    if (currentUser && supabase) {
+    if (currentUser && currentSession && supabase) {
       const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
       if (!emailRegex.test(inputVal)) {
         setRivalError('Rivals must be added using their registered account email address.');
@@ -373,7 +375,7 @@ export const PerformanceHub: React.FC<PerformanceHubProps> = ({
     setCompareStats(null);
 
     try {
-      if (supabase && rival.id) {
+      if (supabase && currentSession && rival.id) {
         // Attempt to query real career statistics if stored in profiles table
         const { data, error } = await supabase
           .from('profiles')
@@ -422,7 +424,7 @@ export const PerformanceHub: React.FC<PerformanceHubProps> = ({
     setCompareLoading(false);
   };
 
-  const activeRivalsList = currentUser && supabase ? dbRivals : guestRivals;
+  const activeRivalsList = currentUser && currentSession && supabase ? dbRivals : guestRivals;
 
   // Rating chart coordinate mapping
   const ratingData = useMemo(() => {

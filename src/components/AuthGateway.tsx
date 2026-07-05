@@ -4,7 +4,7 @@ import { Mail, Lock, CheckCircle, AlertCircle, Loader2, Shield, Flame, BookOpen,
 import { supabase, isSupabaseConfigured, configWarning } from '../lib/supabase';
 
 interface AuthGatewayProps {
-  onAuthSuccess: (user: any) => void;
+  onAuthSuccess: (user: any, session: any) => void;
 }
 
 export const AuthGateway: React.FC<AuthGatewayProps> = ({ onAuthSuccess }) => {
@@ -49,9 +49,10 @@ export const AuthGateway: React.FC<AuthGatewayProps> = ({ onAuthSuccess }) => {
             careerHistory: [],
           }
         };
+        const demoSession = { id: 'demo-session-id' };
         setSuccessMsg(`Welcome to Gambit! (Demo Cloud-Sync Mode Active)`);
         setTimeout(() => {
-          onAuthSuccess(demoUser);
+          onAuthSuccess(demoUser, demoSession);
         }, 1200);
       }, 1000);
       return;
@@ -68,10 +69,17 @@ export const AuthGateway: React.FC<AuthGatewayProps> = ({ onAuthSuccess }) => {
         if (signUpErr) throw signUpErr;
 
         if (data?.user) {
-          setSuccessMsg('Registration successful! Please check your email inbox if verification is enabled.');
-          setTimeout(() => {
-            onAuthSuccess(data.user);
-          }, 2000);
+          if (data.session) {
+            setSuccessMsg('Registration successful! Loading profile...');
+            setTimeout(() => {
+              onAuthSuccess(data.user, data.session);
+            }, 2000);
+          } else {
+            setSuccessMsg('Verification Email Dispatched. Please check your inbox to activate your profile before logging in.');
+            setTimeout(() => {
+              onAuthSuccess(data.user, null);
+            }, 3000);
+          }
         } else {
           throw new Error('Registration did not return user details.');
         }
@@ -86,7 +94,7 @@ export const AuthGateway: React.FC<AuthGatewayProps> = ({ onAuthSuccess }) => {
         if (data?.user) {
           setSuccessMsg('Welcome back! Loading your profile...');
           setTimeout(() => {
-            onAuthSuccess(data.user);
+            onAuthSuccess(data.user, data.session);
           }, 1200);
         }
       }

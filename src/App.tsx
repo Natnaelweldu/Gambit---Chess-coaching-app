@@ -6,7 +6,7 @@ import { RecommendationsSection } from './components/RecommendationsSection';
 import { ChessReportCard } from './components/ChessReportCard';
 import { PerformanceHub } from './components/PerformanceHub';
 import { CoachProfile, RecommendationState } from './types';
-import { Shield, Sparkles, Trophy, BookOpen, Clock, Activity, Users, History, TrendingUp, Trash2, Award, Loader2, Flame, Play } from 'lucide-react';
+import { Shield, Sparkles, Trophy, BookOpen, Clock, Activity, Users, History, TrendingUp, Trash2, Award, Loader2, Flame, Play, Mail } from 'lucide-react';
 import { supabase, loadUserStats, saveUserStats } from './lib/supabase';
 import { SupabaseAuthModal } from './components/SupabaseAuthModal';
 import { AuthGateway } from './components/AuthGateway';
@@ -31,6 +31,9 @@ export default function App() {
 
   // Supabase Auth and Sync States
   const [currentUser, setCurrentUser] = useState<any>(null);
+  const [currentSession, setCurrentSession] = useState<any>(null);
+  const [verificationRequired, setVerificationRequired] = useState<boolean>(false);
+  const [unverifiedEmail, setUnverifiedEmail] = useState<string>('');
   const [authLoading, setAuthLoading] = useState<boolean>(true);
   const [authModalOpen, setAuthModalOpen] = useState<boolean>(false);
   const [authModalMode, setAuthModalMode] = useState<'signin' | 'signup'>('signin');
@@ -143,24 +146,32 @@ export default function App() {
 
     // Get current session on mount
     supabase.auth.getSession().then(({ data: { session } }) => {
-      if (session?.user) {
+      if (session?.user && session) {
+        setCurrentSession(session);
         setCurrentUser(session.user);
         handleFetchAndSyncStats(session.user).finally(() => {
           setAuthLoading(false);
         });
       } else {
+        setCurrentSession(null);
+        setCurrentUser(null);
         setAuthLoading(false);
       }
     }).catch(() => {
+      setCurrentSession(null);
+      setCurrentUser(null);
       setAuthLoading(false);
     });
 
     // Listen to auth changes
     const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
-      if (session?.user) {
+      if (session?.user && session) {
+        setCurrentSession(session);
         setCurrentUser(session.user);
+        setVerificationRequired(false);
         await handleFetchAndSyncStats(session.user);
       } else {
+        setCurrentSession(null);
         setCurrentUser(null);
         // Reset to guest localStorage values
         const savedSkill = localStorage.getItem('chess_coach_skill_level');
@@ -587,12 +598,72 @@ export default function App() {
     );
   }
 
-  if (!currentUser) {
+  if (verificationRequired) {
+    return (
+      <div className="min-h-screen bg-[#020617] text-slate-100 flex flex-col justify-center items-center relative px-4 select-none overflow-hidden font-sans">
+        {/* Background radial glows */}
+        <div className="absolute -top-40 left-1/4 w-[600px] h-[600px] bg-amber-500/10 rounded-full blur-[150px] pointer-events-none" />
+        <div className="absolute -bottom-40 right-1/4 w-[700px] h-[700px] bg-slate-500/5 rounded-full blur-[180px] pointer-events-none" />
+
+        <div className="w-full max-w-md bg-slate-950/60 border border-slate-800/80 rounded-3xl p-8 backdrop-blur-xl shadow-2xl relative z-10 text-center space-y-6">
+          <div className="mx-auto w-16 h-16 bg-amber-500/10 border border-amber-500/20 rounded-2xl flex items-center justify-center text-amber-400">
+            <Mail className="w-8 h-8 animate-pulse text-amber-400" />
+          </div>
+
+          <div className="space-y-2">
+            <h2 className="text-2xl font-display font-black text-white uppercase tracking-wide">
+              Confirm Your Email
+            </h2>
+            <p className="text-sm text-slate-400 leading-relaxed">
+              Verification Email Dispatched. Please check your inbox to activate your profile before logging in.
+            </p>
+          </div>
+
+          {unverifiedEmail && (
+            <div className="bg-slate-900/60 border border-slate-800/80 px-4 py-2.5 rounded-xl font-mono text-xs text-slate-300 inline-block">
+              {unverifiedEmail}
+            </div>
+          )}
+
+          <div className="text-left bg-slate-900/30 border border-slate-900/50 p-4 rounded-xl space-y-2 text-xs text-slate-400">
+            <div className="flex items-start gap-2">
+              <span className="text-amber-500 font-bold">•</span>
+              <p>Check your spam or junk folder if you don't receive the email within 2 minutes.</p>
+            </div>
+            <div className="flex items-start gap-2">
+              <span className="text-amber-500 font-bold">•</span>
+              <p>The activation link is valid for 24 hours. Once clicked, you can return here and sign in.</p>
+            </div>
+          </div>
+
+          <button
+            onClick={() => {
+              setVerificationRequired(false);
+              setCurrentUser(null);
+              setCurrentSession(null);
+              setUnverifiedEmail('');
+            }}
+            className="w-full bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-200 font-bold uppercase tracking-wider text-xs py-3 rounded-xl transition-all cursor-pointer active:scale-98"
+          >
+            Back to Login Screen
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  if (!currentUser || (supabase && !currentSession)) {
     return (
       <AuthGateway
-        onAuthSuccess={(user) => {
-          setCurrentUser(user);
-          handleFetchAndSyncStats(user);
+        onAuthSuccess={(user, session) => {
+          if (supabase && !session) {
+            setUnverifiedEmail(user?.email || '');
+            setVerificationRequired(true);
+          } else {
+            setCurrentSession(session || { id: 'demo' });
+            setCurrentUser(user);
+            handleFetchAndSyncStats(user);
+          }
         }}
       />
     );
@@ -732,6 +803,7 @@ export default function App() {
           >
             <PerformanceHub
               currentUser={currentUser}
+              currentSession={currentSession}
               careerHistory={careerHistory}
               unlockedAchievements={unlockedAchievements}
               eloRating={eloRating}
@@ -1264,9 +1336,15 @@ export default function App() {
         isOpen={authModalOpen}
         onClose={() => setAuthModalOpen(false)}
         initialMode={authModalMode}
-        onAuthSuccess={(user) => {
-          setCurrentUser(user);
-          handleFetchAndSyncStats(user);
+        onAuthSuccess={(user, session) => {
+          if (supabase && !session) {
+            setUnverifiedEmail(user?.email || '');
+            setVerificationRequired(true);
+          } else {
+            setCurrentSession(session || { id: 'demo' });
+            setCurrentUser(user);
+            handleFetchAndSyncStats(user);
+          }
         }}
       />
 

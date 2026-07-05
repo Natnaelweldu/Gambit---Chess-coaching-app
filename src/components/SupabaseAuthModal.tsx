@@ -6,7 +6,7 @@ import { supabase, isSupabaseConfigured, configWarning } from '../lib/supabase';
 interface SupabaseAuthModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onAuthSuccess: (user: any) => void;
+  onAuthSuccess: (user: any, session: any) => void;
   initialMode?: 'signin' | 'signup';
 }
 
@@ -63,9 +63,10 @@ export const SupabaseAuthModal: React.FC<SupabaseAuthModalProps> = ({
             careerHistory: [],
           }
         };
+        const demoSession = { id: 'demo-session-id' };
         setSuccessMsg(`Simulated ${isSignUp ? 'sign up' : 'sign in'} successful! (Demo Mode)`);
         setTimeout(() => {
-          onAuthSuccess(demoUser);
+          onAuthSuccess(demoUser, demoSession);
           onClose();
         }, 1500);
       }, 1000);
@@ -83,11 +84,19 @@ export const SupabaseAuthModal: React.FC<SupabaseAuthModalProps> = ({
         if (signUpErr) throw signUpErr;
 
         if (data?.user) {
-          setSuccessMsg('Registration successful! Please check your email inbox if verification is enabled.');
-          setTimeout(() => {
-            onAuthSuccess(data.user);
-            onClose();
-          }, 2000);
+          if (data.session) {
+            setSuccessMsg('Registration successful! Loading profile...');
+            setTimeout(() => {
+              onAuthSuccess(data.user, data.session);
+              onClose();
+            }, 2000);
+          } else {
+            setSuccessMsg('Verification Email Dispatched. Please check your inbox to activate your profile before logging in.');
+            setTimeout(() => {
+              onAuthSuccess(data.user, null);
+              onClose();
+            }, 2500);
+          }
         } else {
           throw new Error('Registration did not return user details.');
         }
@@ -102,7 +111,7 @@ export const SupabaseAuthModal: React.FC<SupabaseAuthModalProps> = ({
         if (data?.user) {
           setSuccessMsg('Welcome back! Successfully logged in.');
           setTimeout(() => {
-            onAuthSuccess(data.user);
+            onAuthSuccess(data.user, data.session);
             onClose();
           }, 1200);
         }
