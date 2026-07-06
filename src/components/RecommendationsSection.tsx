@@ -3,6 +3,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { CoachProfile, RecommendationState } from '../types';
 import { Sparkles, PlayCircle, X, Lock, Film, TrendingUp } from 'lucide-react';
 import { RECOMMENDATION_CYCLE_LENGTH, gamesUntilNextAnalysis } from '../lib/recommendationEngine';
+import { YouTubeEmbed } from './YouTubeEmbed';
 
 // Coach-chat triggered "quick lesson" videos. Independent from the 3-game
 // progression tracker below — this map powers the callout that appears when
@@ -158,15 +159,8 @@ export const RecommendationsSection: React.FC<RecommendationsSectionProps> = ({
                 )}
               </div>
 
-              <div className="w-full lg:w-[360px] xl:w-[440px] aspect-video rounded-lg overflow-hidden border border-slate-800 shadow-xl bg-black">
-                <iframe
-                  className="w-full h-full"
-                  src={getEmbedUrl(videoData.embedUrl)}
-                  title={videoData.title}
-                  frameBorder="0"
-                  allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
-                  allowFullScreen
-                />
+              <div className="w-full lg:w-[360px] xl:w-[440px]">
+                <YouTubeEmbed url={videoData.embedUrl} title={videoData.title} />
               </div>
             </div>
           </motion.div>
@@ -222,16 +216,7 @@ export const RecommendationsSection: React.FC<RecommendationsSectionProps> = ({
                 transition={{ duration: 0.25 }}
                 className="rounded-xl border border-slate-900 bg-slate-950/60 overflow-hidden flex flex-col"
               >
-                <div className="aspect-video bg-black">
-                  <iframe
-                    className="w-full h-full"
-                    src={getEmbedUrl(video.embedUrl)}
-                    title={video.title}
-                    frameBorder="0"
-                    allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
-                    allowFullScreen
-                  />
-                </div>
+                <YouTubeEmbed url={video.embedUrl} title={video.title} />
                 <div className="p-3.5 flex flex-col gap-2 flex-1">
                   <span className="self-start text-[10px] bg-rose-500/10 text-rose-400 border border-rose-500/20 px-2 py-0.5 rounded-full font-mono font-medium flex items-center gap-1">
                     <Film className="w-3 h-3" />

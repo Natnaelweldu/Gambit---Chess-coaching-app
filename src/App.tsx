@@ -5,6 +5,7 @@ import { CoachChatSection } from './components/CoachChatSection';
 import { RecommendationsSection } from './components/RecommendationsSection';
 import { ChessReportCard } from './components/ChessReportCard';
 import { PerformanceHub } from './components/PerformanceHub';
+import { MatchAnalyzer } from './components/MatchAnalyzer';
 import { CoachProfile, RecommendationState } from './types';
 import { Shield, Sparkles, Trophy, BookOpen, Clock, Activity, Users, History, TrendingUp, Trash2, Award, Loader2, Flame, Play, Mail } from 'lucide-react';
 import { supabase, loadUserStats, saveUserStats } from './lib/supabase';
@@ -94,7 +95,7 @@ export default function App() {
   });
 
   // View context switcher state
-  const [viewMode, setViewMode] = useState<'game' | 'performance'>('game');
+  const [viewMode, setViewMode] = useState<'game' | 'performance' | 'analyzer'>('game');
 
   // Setter wrapper that propagates to state and localStorage (and Supabase if authenticated)
   const setSkillLevel = (lvl: number) => {
@@ -723,21 +724,43 @@ export default function App() {
 
           {/* Header Action CTA & User Auth */}
           <div className="flex items-center gap-3">
-            {currentUser && (
+            <div className="flex bg-slate-900/90 rounded-xl p-1 border border-slate-800 text-[11px] font-bold font-mono uppercase tracking-wider">
               <button
-                id="header-performance-hub-button"
-                onClick={() => setViewMode(viewMode === 'game' ? 'performance' : 'game')}
-                className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl border text-[11px] font-bold font-mono uppercase tracking-wider transition-all cursor-pointer active:scale-95 ${
-                  viewMode === 'performance'
-                    ? 'bg-amber-500 text-slate-950 border-amber-500 font-black shadow-lg shadow-amber-500/15'
-                    : 'bg-slate-900/80 hover:bg-slate-800 text-amber-400 hover:text-amber-300 border-slate-800 font-extrabold'
+                id="header-game-space-tab"
+                onClick={() => setViewMode('game')}
+                className={`px-3 py-1.5 rounded-lg transition-all cursor-pointer ${
+                  viewMode === 'game'
+                    ? 'bg-amber-500 text-slate-950 font-black shadow'
+                    : 'text-slate-400 hover:text-white'
                 }`}
               >
-                <Trophy className="w-3.5 h-3.5" />
-                <span className="hidden sm:inline">Performance Hub</span>
-                <span className="sm:hidden">Hub</span>
+                Game Space
               </button>
-            )}
+              <button
+                id="header-match-analyzer-tab"
+                onClick={() => setViewMode('analyzer')}
+                className={`px-3 py-1.5 rounded-lg transition-all cursor-pointer ${
+                  viewMode === 'analyzer'
+                    ? 'bg-amber-500 text-slate-950 font-black shadow'
+                    : 'text-slate-400 hover:text-white'
+                }`}
+              >
+                Match Analyzer
+              </button>
+              {currentUser && (
+                <button
+                  id="header-performance-hub-tab"
+                  onClick={() => setViewMode('performance')}
+                  className={`px-3 py-1.5 rounded-lg transition-all cursor-pointer ${
+                    viewMode === 'performance'
+                      ? 'bg-amber-500 text-slate-950 font-black shadow'
+                      : 'text-slate-400 hover:text-white'
+                  }`}
+                >
+                  Performance Hub
+                </button>
+              )}
+            </div>
 
             <div className="hidden sm:flex items-center gap-2 bg-slate-900/80 border border-slate-800/80 px-3.5 py-1.5 rounded-xl text-xs font-semibold text-slate-300">
               <span className={`inline-block w-2 h-2 rounded-full ${isAiThinking ? 'bg-amber-400 animate-ping' : 'bg-emerald-500'}`}></span>
@@ -811,10 +834,18 @@ export default function App() {
               onBack={() => setViewMode('game')}
             />
           </motion.div>
+        ) : viewMode === 'analyzer' ? (
+          <motion.div
+            initial={{ opacity: 0, y: 15 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.35 }}
+          >
+            <MatchAnalyzer currentUser={currentUser} />
+          </motion.div>
         ) : (
           <>
             {/* Upper Dashboard Grid (Board & Sidebar) */}
-            <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-stretch lg:h-[600px] xl:h-[660px] shrink-0 min-h-0">
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-stretch lg:h-[820px] xl:h-[880px] shrink-0 min-h-0">
           
           {/* Main Chessboard Area Container (Left) */}
           <div className="lg:col-span-8 flex flex-col h-full overflow-hidden">
@@ -825,6 +856,7 @@ export default function App() {
               setCoachHintActive={setCoachHintActive}
               skillLevel={skillLevel}
               setSkillLevel={setSkillLevel}
+              coachProfile={coachProfile}
             />
           </div>
 
