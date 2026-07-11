@@ -202,7 +202,19 @@ export const CoachChatSection: React.FC<CoachChatSectionProps> = ({
       });
 
       if (!response.ok) {
-        throw new Error('API request failed');
+        let errorMsg = 'API request failed';
+        try {
+          const errData = await response.json();
+          if (errData && errData.error) {
+            errorMsg = errData.error;
+          }
+        } catch (_) {
+          try {
+            const errText = await response.text();
+            if (errText) errorMsg = errText;
+          } catch (__) {}
+        }
+        throw new Error(errorMsg);
       }
 
       const data = await response.json();
@@ -226,7 +238,7 @@ export const CoachChatSection: React.FC<CoachChatSectionProps> = ({
         }
         return updated;
       });
-    } catch (error) {
+    } catch (error: any) {
       console.error('Failed to get coach response:', error);
       // Fallback response with the required tag
       setMessages((prev) => [
@@ -234,7 +246,7 @@ export const CoachChatSection: React.FC<CoachChatSectionProps> = ({
         {
           id: `msg-coach-${Date.now()}`,
           sender: 'coach',
-          text: `I'm having a bit of trouble connecting to the master class engine right now, but you played well. Keep practicing! ${
+          text: `I'm having a bit of trouble connecting to the master class engine right now, but you played well. Keep practicing!\n\n(Error Details: ${error?.message || error || 'Unknown Error'})${
             isGameEnd ? '\n\n#positional-play' : ''
           }`,
           timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),

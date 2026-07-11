@@ -213,15 +213,27 @@ export const MatchAnalyzer: React.FC<MatchAnalyzerProps> = ({ currentUser }) => 
           }
         ]);
       } else {
-        throw new Error('API failure');
+        let errorMsg = 'API request failed';
+        try {
+          const errData = await response.json();
+          if (errData && errData.error) {
+            errorMsg = errData.error;
+          }
+        } catch (_) {
+          try {
+            const errText = await response.text();
+            if (errText) errorMsg = errText;
+          } catch (__) {}
+        }
+        throw new Error(errorMsg);
       }
-    } catch (e) {
+    } catch (e: any) {
       setMessages(prev => [
         ...prev,
         {
           id: `coach-msg-err-${Date.now()}`,
           sender: 'coach',
-          text: "I was unable to analyze this exact square orientation right now. Keep your pieces defended and develop your knights!",
+          text: `I was unable to analyze this exact square orientation right now. Keep your pieces defended and develop your knights!\n\n(Error Details: ${e?.message || e || 'Unknown Error'})`,
           timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
         }
       ]);

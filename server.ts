@@ -118,6 +118,11 @@ Keep your response educational, structured, and under 150 words. Do not give awa
         const role = msg.sender === 'user' ? 'user' : 'model';
         if (!msg.text || !msg.text.trim()) continue;
 
+        // CRITICAL: Gemini conversation contents must start with a 'user' turn
+        if (contents.length === 0 && role === 'model') {
+          continue;
+        }
+
         if (role === lastRole && contents.length > 0) {
           // Merge consecutive identical roles by appending text
           contents[contents.length - 1].parts[0].text += "\n" + msg.text;
