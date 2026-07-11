@@ -5,29 +5,28 @@ import { GoogleGenAI } from "@google/genai";
 
 dotenv.config();
 
-async function startServer() {
-  const app = express();
-  const PORT = 3000;
+const app = express();
+const PORT = 3000;
 
-  app.use(express.json());
+app.use(express.json());
 
-  // Initialize Gemini client on the server
-  const apiKey = process.env.VITE_GEMINI_API_KEY || process.env.GEMINI_API_KEY;
-  if (!apiKey) {
-    console.warn("WARNING: GEMINI_API_KEY or VITE_GEMINI_API_KEY environment variable is not set. Please set it in Settings > Secrets.");
-  }
+// Initialize Gemini client on the server
+const apiKey = process.env.VITE_GEMINI_API_KEY || process.env.GEMINI_API_KEY;
+if (!apiKey) {
+  console.warn("WARNING: GEMINI_API_KEY or VITE_GEMINI_API_KEY environment variable is not set. Please set it in Settings > Secrets.");
+}
 
-  const ai = new GoogleGenAI({
-    apiKey: apiKey || "MOCK_KEY_IF_UNDEFINED",
-    httpOptions: {
-      headers: {
-        'User-Agent': 'aistudio-build',
-      }
+const ai = new GoogleGenAI({
+  apiKey: apiKey || "MOCK_KEY_IF_UNDEFINED",
+  httpOptions: {
+    headers: {
+      'User-Agent': 'aistudio-build',
     }
-  });
+  }
+});
 
-  // API endpoint for chatbot and game ending analysis
-  app.post("/api/coach/chat", async (req: express.Request, res: express.Response) => {
+// API endpoint for chatbot and game ending analysis
+app.post("/api/coach/chat", async (req: express.Request, res: express.Response) => {
     try {
       if (!apiKey) {
         return res.json({
@@ -344,25 +343,30 @@ Response JSON Schema:
   });
 
   // Serve static assets / Vite files
-  if (process.env.NODE_ENV !== "production") {
-    // Dynamic import to avoid loading Vite inside production bundle
-    const { createServer: createViteServer } = await import("vite");
-    const vite = await createViteServer({
-      server: { middlewareMode: true },
-      appType: "spa",
-    });
-    app.use(vite.middlewares);
-  } else {
-    const distPath = path.join(process.cwd(), 'dist');
-    app.use(express.static(distPath));
-    app.get('*', (req: express.Request, res: express.Response) => {
-      res.sendFile(path.join(distPath, 'index.html'));
-    });
+  async function setupVite() {
+    if (process.env.NODE_ENV !== "production") {
+      // Dynamic import to avoid loading Vite inside production bundle
+      const { createServer: createViteServer } = await import("vite");
+      const vite = await createViteServer({
+        server: { middlewareMode: true },
+        appType: "spa",
+      });
+      app.use(vite.middlewares);
+    } else {
+      const distPath = path.join(process.cwd(), 'dist');
+      app.use(express.static(distPath));
+      app.get('*', (req: express.Request, res: express.Response) => {
+        res.sendFile(path.join(distPath, 'index.html'));
+      });
+    }
   }
 
-  app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Server running on port ${PORT}`);
+  setupVite().then(() => {
+    if (!process.env.VERCEL) {
+      app.listen(PORT, "0.0.0.0", () => {
+        console.log(`Server running on port ${PORT}`);
+      });
+    }
   });
-}
 
-startServer();
+export default app;
