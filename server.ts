@@ -100,24 +100,47 @@ Keep your response educational, structured, and under 150 words. Do not give awa
       }
 
       // Prepare conversation history
-      const contents = [];
+      const contents: any[] = [];
+      const historyToProcess = [];
+
       if (history && history.length > 0) {
-        // Filter out initial system-like messages to prevent context dilution, keeping last 8 messages
+        // To prevent context dilution, keep last 8 messages of history
         const recentHistory = history.slice(-8);
-        for (const msg of recentHistory) {
-          const role = msg.sender === 'user' ? 'user' : 'model';
+        // Exclude the last message from history if it is a user message (we will append the final user 'message' turn explicitly)
+        const lastMsg = recentHistory[recentHistory.length - 1];
+        const hasUserLastMsg = lastMsg && lastMsg.sender === 'user';
+        const sliceEnd = hasUserLastMsg ? -1 : recentHistory.length;
+        historyToProcess.push(...recentHistory.slice(0, sliceEnd));
+      }
+
+      // Filter and construct alternating roles sequence, merging consecutive messages of the same role
+      let lastRole = "";
+      for (const msg of historyToProcess) {
+        const role = msg.sender === 'user' ? 'user' : 'model';
+        if (!msg.text || !msg.text.trim()) continue;
+
+        if (role === lastRole && contents.length > 0) {
+          // Merge consecutive identical roles by appending text
+          contents[contents.length - 1].parts[0].text += "\n" + msg.text;
+        } else {
           contents.push({
             role,
             parts: [{ text: msg.text }]
           });
+          lastRole = role;
         }
       }
 
-      // Add the current user query as the final turn
-      contents.push({
-        role: 'user',
-        parts: [{ text: message || "Analyze the current board state." }]
-      });
+      // Append the active user query as the final turn
+      const finalUserText = message || "Analyze the current board state.";
+      if (contents.length > 0 && contents[contents.length - 1].role === 'user') {
+        contents[contents.length - 1].parts[0].text += "\n" + finalUserText;
+      } else {
+        contents.push({
+          role: 'user',
+          parts: [{ text: finalUserText }]
+        });
+      }
 
       const response = await ai.models.generateContent({
         model: "gemini-3.5-flash",
